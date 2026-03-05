@@ -7,43 +7,44 @@
 #include "TelemetrySensor.h"
 #include "VoltageSensor.h"
 
-// 单值传感器读数：数值 + 有效标志 + 最后更新时间（便于扩展新 IPSO 类型）
+// Single-value sensor reading: value + valid flag + last update time (for extending new IPSO types)
 struct ScalarReading {
     float value = 0.0f;
     uint32_t lastUpdateMs = 0;
     bool valid = false;
 };
 
-// 三轴传感器（如加速度计）
+// 3-axis sensor (e.g. accelerometer)
 struct AccelReading {
     float x = 0.0f, y = 0.0f, z = 0.0f;
     uint32_t lastUpdateMs = 0;
     bool valid = false;
 };
 
-// 电源模块读数（RAK9154 等，来自 IPSO 0xB8/0xB9/0xBA）：母线电压、电流、电量百分比
+// Power module reading (RAK9154 etc., from IPSO 0xB8/0xB9/0xBA): bus voltage, current, capacity percent
 struct HubPower {
-    uint16_t volMv = 0;    // 母线电压 mV
-    int16_t curMa = 0;     // 母线电流 mA
-    uint8_t percent = 0;   // 电量 0..100
+    uint16_t volMv = 0;    // Bus voltage mV
+    int16_t curMa = 0;     // Bus current mA
+    uint8_t percent = 0;   // Capacity 0..100
 };
 
 /*
-IPSO 类型定义见 onewire_master_protocol.h（https://github.com/beegee-tokyo/RAK-OneWireSerial/blob/main/src/onewire_master_api.h）
-*/
-// 环境传感器缓存：所有 IPSO 类型统一在此，新增传感器只需加字段
+ * IPSO type definitions: onewire_master_protocol.h
+ * (https://github.com/beegee-tokyo/RAK-OneWireSerial/blob/main/src/onewire_master_api.h)
+ */
+// Environment sensor cache: all IPSO types in one place; add a field when adding a new sensor
 struct EnvCache {
-    ScalarReading temperature;     // 0x67 温度 °C
-    ScalarReading humidity;        // 0x68 湿度 %
-    ScalarReading pressure;        // 0x73 气压 hPa
-    ScalarReading soil_moisture;   // 0x70 高精度湿度 %
-    ScalarReading wind_speed;      // 0xBE 风速 m/s
-    ScalarReading wind_direction;  // 0xBF, 0..360 风向 °
-    ScalarReading radiation;       // 0xC3 辐射 W/m²
-    ScalarReading soil_ph;         // 0xC1 土壤 pH
-    ScalarReading salinity;        // 0x13 盐度
-    ScalarReading ec;             // 0xC0 电导率 μS/cm
-    AccelReading accel;           // 0x71 加速度 m/s²
+    ScalarReading temperature;     // 0x67 temperature °C
+    ScalarReading humidity;       // 0x68 humidity %
+    ScalarReading pressure;       // 0x73 pressure hPa
+    ScalarReading soil_moisture;  // 0x70 high-precision humidity %
+    ScalarReading wind_speed;     // 0xBE wind speed m/s
+    ScalarReading wind_direction; // 0xBF wind direction 0..360 °
+    ScalarReading radiation;      // 0xC3 radiation W/m²
+    ScalarReading soil_ph;        // 0xC1 soil pH
+    ScalarReading salinity;       // 0x13 salinity
+    ScalarReading ec;             // 0xC0 conductivity μS/cm
+    AccelReading accel;           // 0x71 accelerometer m/s²
 };
 
 class RAKSensorHub : public TelemetrySensor, VoltageSensor, CurrentSensor
