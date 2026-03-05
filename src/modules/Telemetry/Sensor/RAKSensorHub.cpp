@@ -18,7 +18,7 @@ using namespace concurrency;
 
 #define BOOT_DATA_REQ
 
-/** 构造 RAK 一线传感器 Hub，类型为 SENSOR_UNSET，名称 "RAKSensorHub"；实际初始化在 runOnce() 中完成 */
+/** Construct RAK 1-Wire sensor hub (type SENSOR_UNSET, name "RAKSensorHub"); actual init in runOnce(). */
 RAKSensorHub::RAKSensorHub() : TelemetrySensor(meshtastic_TelemetrySensorType_SENSOR_UNSET, "RAKSensorHub") {}
 
 RAKSensorHub rakSensorHub;
@@ -32,13 +32,13 @@ static Lock onewireLock;
 static uint8_t buff[0x200];
 static uint16_t bufflen = 0;
 
-// 电源模块缓存（IPSO 0xB8 电流 / 0xB9 电压 / 0xBA 电量），由 getBusVoltageMv/getCurrentMa/getBusBatteryPercent 读出
+// Power module cache (IPSO 0xB8 current / 0xB9 voltage / 0xBA capacity), read by getBusVoltageMv/getCurrentMa/getBusBatteryPercent
 static HubPower power;
 
-// 环境传感器缓存：统一结构体，新增 IPSO 只需在 EnvCache 中加字段并在 switch 里赋值
+// Environment sensor cache; add field in EnvCache and assign in switch when adding new IPSO
 static EnvCache env;
 
-/** 写入单值传感器读数：更新数值、有效标志与最后更新时间（用于 IPSO 解析时写 env.*） */
+/** Write a scalar sensor reading: update value, valid flag and last update time (used when parsing IPSO into env.*). */
 static inline void setScalar(ScalarReading &r, float v, uint32_t nowMs)
 {
     r.value = v;
@@ -46,47 +46,47 @@ static inline void setScalar(ScalarReading &r, float v, uint32_t nowMs)
     r.lastUpdateMs = nowMs;
 }
 
-/** 判断单值读数是否在有效期内：有效且非零时间戳且未超过 maxAgeMs */
+/** Return true if scalar reading is within validity window: valid, non-zero timestamp, and not older than maxAgeMs. */
 static inline bool scalarFresh(const ScalarReading &r, uint32_t nowMs, uint32_t maxAgeMs)
 {
     return r.valid && r.lastUpdateMs != 0 && (nowMs - r.lastUpdateMs) <= maxAgeMs;
 }
 
-// ----- 探头与轮询状态 -----
-static std::set<uint8_t> provision_list;  // 已注册的探头 PID 集合（来自 ADD_PID / 能力帧热插拔）
-static std::set<uint8_t> sid_seen;        // 已见过的 SID，预留扩展
-static int pid_delta = 0;                 // 上次推进轮询 PID 的时间戳，用于 1500ms 间隔
-static int data_delta = 0;                // 预留
+// ----- Probe and polling state -----
+static std::set<uint8_t> provision_list;  // Set of registered probe PIDs (from ADD_PID / capability hot-plug)
+static std::set<uint8_t> sid_seen;         // SIDs seen so far (reserved)
+static int pid_delta = 0;                  // Last time we advanced poll PID (for 1500 ms interval)
+static int data_delta = 0;                 // Reserved
 
-// ----- 时间戳（RX/TX 节奏、超时、空闲判断） -----
-static uint32_t last_poll_time = 0;   // 上次发起 get.data 轮询的时间
-static uint32_t last_tx_time = 0;     // 上次发送字节时间（半双工需与 RX 错开）
-static uint32_t last_rx_time = 0;     // 上次收到任意字节时间
-static uint32_t last_byte_time = 0;   // 上次往 buff 写入字节时间（用于空闲丢弃残留）
-static uint32_t last_err_time = 0;    // 上次校验/序号错误时间，用于错误后短暂不再发请求
+// ----- Timestamps (RX/TX pacing, timeouts, idle detection) -----
+static uint32_t last_poll_time = 0;   // Last time we sent get.data poll
+static uint32_t last_tx_time = 0;     // Last byte sent (half-duplex: must not overlap RX)
+static uint32_t last_rx_time = 0;     // Last byte received
+static uint32_t last_byte_time = 0;   // Last byte written to buff (for idle discard)
+static uint32_t last_err_time = 0;    // Last checksum/sequence error (briefly stop TX after error)
 
-// ----- 请求/响应状态（半双工一次只允许一个未完成请求） -----
-static bool awaiting_rsp = false;         // 是否正在等待探头响应
-static uint32_t awaiting_rsp_since = 0;  // 发出请求的时间，超时 2s 后放弃并推进 PID
-static bool data_poll_pid_valid = false; // 当前轮询用 PID 是否有效
-static uint8_t data_poll_pid = 0;        // 当前轮询的 PID
+// ----- Request/response state (half-duplex: only one outstanding request) -----
+static bool awaiting_rsp = false;          // Waiting for probe response
+static uint32_t awaiting_rsp_since = 0;   // Time request was sent; give up after 2 s and advance PID
+static bool data_poll_pid_valid = false;  // Current poll PID is valid
+static uint8_t data_poll_pid = 0;         // PID currently being polled
 static bool last_sent_pid_valid = false;
 static uint8_t last_sent_pid = 0;
 
-// ----- 帧解析状态（校验/序号错误时安全 resync，避免 underflow） -----
-static bool processing_frame = false;       // 是否正在 process() 内
-static bool frame_error_during_process = false; // process 过程中是否发生 CHKSUM/SEQ 错误
+// ----- Frame parse state (safe resync on checksum/seq error, avoid underflow) -----
+static bool processing_frame = false;        // Inside process()
+static bool frame_error_during_process = false; // CHKSUM/SEQ error occurred during process
 
-static int sid_queue_delta = 0;  // 预留
-static int status_delta = 0;     // 上次打印状态日志的时间戳（约 5s 一次）
+static int sid_queue_delta = 0;  // Reserved
+static int status_delta = 0;     // Last time we logged status (about every 5 s)
 
 // Hot-plug: periodic listen window (no TX) so new probes can send capability without OVF/collision
-static const uint32_t LISTEN_WINDOW_INTERVAL_MS = 60000;  // every 60s
-static const uint32_t LISTEN_WINDOW_DURATION_MS = 3000;  // 3s no TX
+static const uint32_t LISTEN_WINDOW_INTERVAL_MS = 60000;  // every 60 s
+static const uint32_t LISTEN_WINDOW_DURATION_MS = 3000;   // 3 s no TX
 static uint32_t last_listen_schedule = 0;
 static uint32_t listen_window_until = 0;
 
-/** 从已注册探头列表中取第一个 PID，用于轮询起点或无当前 PID 时复位 */
+/** Get first PID from provision list (poll start or reset when no current PID). */
 static bool getFirstProvisionPid(uint8_t &pid)
 {
     if (provision_list.empty()) {
@@ -96,7 +96,7 @@ static bool getFirstProvisionPid(uint8_t &pid)
     return true;
 }
 
-/** 取当前 PID 在已注册列表中的下一个 PID，用于轮询时依次遍历所有探头 */
+/** Get next PID after current in provision list (round-robin over probes). */
 static bool getNextProvisionPid(uint8_t current, uint8_t &next)
 {
     auto it = provision_list.upper_bound(current);
@@ -107,7 +107,7 @@ static bool getNextProvisionPid(uint8_t current, uint8_t &next)
     return true;
 }
 
-/** 将轮询用 PID 推进到下一个已注册探头；若已是最后一个则回到第一个（实现 Round-Robin 轮询） */
+/** Advance poll PID to next provisioned probe; wrap to first if at end (round-robin). */
 static void advanceDataPollPid()
 {
     if (provision_list.empty()) {
@@ -130,8 +130,8 @@ static void advanceDataPollPid()
 }
 
 /**
- * 一线协议事件回调：由 RakSNHub_Protocl_API.process() 在解析完一帧后调用。
- * 处理 REQ/RSP、ADD_PID/ADD_SID、QSEND（实际发串口）、SDATA_REQ/REPORT（IPSO 解析写 env）、校验/序号错误等。
+ * 1-Wire protocol event callback: invoked by RakSNHub_Protocl_API.process() after parsing a frame.
+ * Handles REQ/RSP, ADD_PID/ADD_SID, QSEND (actual UART TX), SDATA_REQ/REPORT (IPSO parse -> env), checksum/seq errors.
  */
 static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT_E eid, uint8_t *msg, uint16_t len)
 {
@@ -172,7 +172,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         LOG_INFO("+EVT:PID[%02x],ENABLE[%02x]", pid, msg[0]);
         break;
 
-    case SNHUBAPI_EVT_SDATA_REQ:  // 传感器数据请求响应中的 IPSO 解析
+    case SNHUBAPI_EVT_SDATA_REQ:  // IPSO parse from sensor data request response
         LOG_INFO("+EVT:PID[%02x],IPSO[%02x]", pid, msg[0]);
         // for( uint16_t i=1; i<len; i++)
         // {
@@ -180,7 +180,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         // }
         // LOG_INFO("");
         switch (msg[0]) {
-        case RAK_IPSO_TEMP_SENSOR: {  // 温度传感器 (0x67)，0.1°C
+        case RAK_IPSO_TEMP_SENSOR: {  // Temperature (0x67), 0.1 °C
             if (len < 3)
                 break;
             int16_t temp_raw = (msg[2] << 8) + msg[1];
@@ -193,7 +193,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Temperature sensor: %.2f C", temperature);
             break;
         }
-        case RAK_IPSO_HUMIDITY_SENSOR: {  // 相对湿度 (0x68)，整型 %
+        case RAK_IPSO_HUMIDITY_SENSOR: {  // Humidity (0x68), integer %
             if (len < 2)
                 break;
             uint8_t hum_raw = msg[1];
@@ -206,7 +206,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Humidity sensor: %.2f %%", humidity);
             break;
         }
-        case RAK_IPSO_HP_HUMIDITY: {  // 高精度湿度 (0x70)，0.1%RH，气象站/土壤含水
+        case RAK_IPSO_HP_HUMIDITY: {  // High-precision humidity (0x70), 0.1 % RH
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -219,7 +219,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("High precision humidity: %.1f %%", moisture);
             break;
         }
-        case RAK_IPSO_BAROMETER: {  // 气压 (0x73)，0.1 hPa
+        case RAK_IPSO_BAROMETER: {  // Barometric pressure (0x73), 0.1 hPa
             if (len < 3)
                 break;
             int16_t press_raw = (msg[2] << 8) + msg[1];
@@ -232,14 +232,14 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("air pressure sensor: %.1f hPa", pressure);
             break;
         }
-        case RAK_IPSO_CO2: {  // CO2 浓度 (0x7D)，单位/缩放由传感器定义
+        case RAK_IPSO_CO2: {  // CO2 (0x7D), scale sensor-defined
             if (len < 3)
                 break;
             uint16_t raw = (msg[2] << 8) + msg[1];
             LOG_INFO("CO2 sensor: %u (raw units)", (unsigned)raw);
             break;
         }
-        case RAK_IPSO_WIND: {  // 风速 (0xBE)，0.01 m/s
+        case RAK_IPSO_WIND: {  // Wind speed (0xBE), 0.01 m/s
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -252,7 +252,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Wind speed: %.2f m/s", ws);
             break;
         }
-        case RAK_IPSO_WIND_DIR: {  // 风向 (0xBF)，1°
+        case RAK_IPSO_WIND_DIR: {  // Wind direction (0xBF), 1°
             if (len < 3)
                 break;
             uint16_t raw = (msg[2] << 8) + msg[1];
@@ -260,7 +260,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Wind direction: %u deg", (unsigned)(raw % 360));
             break;
         }
-        case RAK_IPSO_PYRANOMETER: {  // 日照强度/辐射 (0xC3)，单位依传感器
+        case RAK_IPSO_PYRANOMETER: {  // Pyranometer / radiation (0xC3)
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -268,7 +268,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Pyranometer radiation: %.1f", env.radiation.value);
             break;
         }
-        case RAK_IPSO_CAPACITY:  // 电量百分比 (0~100%)
+        case RAK_IPSO_CAPACITY:  // Capacity percent (0–100 %)
             if (len < 2)
                 break;
             power.percent = msg[1];
@@ -277,14 +277,14 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             }
             LOG_INFO("Battery capacity: %u %%", (unsigned)power.percent);
             break;
-        case RAK_IPSO_DC_CURRENT:  // 直流电流，单位 mA
+        case RAK_IPSO_DC_CURRENT:  // DC current mA
             if (len < 3)
                 break;
             power.curMa = (msg[2] << 8) + msg[1];
             LOG_INFO("Battery current raw: %d mA", (int)power.curMa);
             LOG_INFO("Battery current: %.3f A", (float)power.curMa / 1000.0f);
             break;
-        case RAK_IPSO_DC_VOLTAGE:  // 直流电压，单位 mV（raw*10）
+        case RAK_IPSO_DC_VOLTAGE:  // DC voltage mV (raw*10)
             if (len < 3)
                 break;
             power.volMv = (msg[2] << 8) + msg[1];
@@ -292,7 +292,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Battery voltage raw: %u mV", (unsigned)power.volMv);
             LOG_INFO("Battery voltage: %.2f V", (float)power.volMv / 1000.0f);
             break;
-        case RAK_IPSO_HP_PH: {  // 高精度 pH (0xC1)，0.01 分辨率
+        case RAK_IPSO_HP_PH: {  // High-precision pH (0xC1), 0.01 resolution
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -301,7 +301,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Soil pH: %.2f", ph);
             break;
         }
-        case RAK_IPSO_ACCELEROMETER: {  // 三轴加速度 (0x71)，6 字节 X,Y,Z int16
+        case RAK_IPSO_ACCELEROMETER: {  // 3-axis accelerometer (0x71), 6 bytes X,Y,Z int16
             if (len < 7)
                 break;
             int16_t x = (int16_t)((msg[2] << 8) + msg[1]);
@@ -315,7 +315,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Accelerometer (0x71): X=%.3f Y=%.3f Z=%.3f", env.accel.x, env.accel.y, env.accel.z);
             break;
         }
-        case RAK_IPSO_SALINITY: {  // 盐度 (0x13)，0.01 缩放（依据传感器）
+        case RAK_IPSO_SALINITY: {  // Salinity (0x13), 0.01 scale
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -323,7 +323,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Salinity: %.2f (raw units)", env.salinity.value);
             break;
         }
-        case RAK_IPSO_EC: {  // 电导率 EC (0xC0)，0.01 缩放（依据传感器）
+        case RAK_IPSO_EC: {  // Conductivity EC (0xC0), 0.01 scale
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -337,7 +337,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         rakSensorHub.setLastRead(millis());
 
         break;
-    case SNHUBAPI_EVT_REPORT:  // 主动上报的 IPSO 解析（与 SDATA_REQ 逻辑一致）
+    case SNHUBAPI_EVT_REPORT:  // Unsolicited report IPSO parse (same logic as SDATA_REQ)
         LOG_INFO("+EVT:PID[%02x],IPSO[%02x]", pid, msg[0]);
         // for( uint16_t i=1; i<len; i++)
         // {
@@ -346,7 +346,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         // LOG_INFO("");
 
         switch (msg[0]) {
-        case RAK_IPSO_TEMP_SENSOR: {  // 温度传感器 (0x67)
+        case RAK_IPSO_TEMP_SENSOR: {  // Temperature (0x67)
             if (len < 3)
                 break;
             int16_t temp_raw = (msg[2] << 8) + msg[1];
@@ -359,7 +359,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Temperature: %.2f C", temperature);
             break;
         }
-        case RAK_IPSO_HUMIDITY_SENSOR: {  // 相对湿度 (0x68)
+        case RAK_IPSO_HUMIDITY_SENSOR: {  // Humidity (0x68)
             if (len < 2)
                 break;
             uint8_t hum_raw = msg[1];
@@ -372,7 +372,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Humidity: %.2f %%", humidity);
             break;
         }
-        case RAK_IPSO_HP_HUMIDITY: {  // 高精度湿度 (0x70)
+        case RAK_IPSO_HP_HUMIDITY: {  // High-precision humidity (0x70)
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -385,7 +385,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("High precision humidity: %.1f %%", moisture);
             break;
         }
-        case RAK_IPSO_BAROMETER: {  // 气压 (0x73)
+        case RAK_IPSO_BAROMETER: {  // Barometric pressure (0x73)
             if (len < 3)
                 break;
             int16_t press_raw = (msg[2] << 8) + msg[1];
@@ -398,14 +398,14 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("air pressure sensor: %.1f hPa", pressure);
             break;
         }
-        case RAK_IPSO_CO2: {  // CO2 浓度 (0x7D)
+        case RAK_IPSO_CO2: {  // CO2 (0x7D)
             if (len < 3)
                 break;
             uint16_t raw = (msg[2] << 8) + msg[1];
             LOG_INFO("CO2 sensor: %u (raw units)", (unsigned)raw);
             break;
         }
-        case RAK_IPSO_CAPACITY:  // 电量百分比
+        case RAK_IPSO_CAPACITY:  // Capacity percent
             if (len < 2)
                 break;
             power.percent = msg[1];
@@ -414,20 +414,20 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             }
             LOG_INFO("Battery capacity: %u %%", (unsigned)power.percent);
             break;
-        case RAK_IPSO_DC_CURRENT:  // 直流电流
+        case RAK_IPSO_DC_CURRENT:  // DC current
             if (len < 3)
                 break;
             power.curMa = (msg[1] << 8) + msg[2];
             LOG_INFO("Battery current: %.3f A", (float)power.curMa / 1000.0f);
             break;
-        case RAK_IPSO_DC_VOLTAGE:  // 直流电压
+        case RAK_IPSO_DC_VOLTAGE:  // DC voltage
             if (len < 3)
                 break;
             power.volMv = (msg[1] << 8) + msg[2];
             power.volMv *= 10;
             LOG_INFO("Battery voltage: %.2f V", (float)power.volMv / 1000.0f);
             break;
-        case RAK_IPSO_WIND: {  // 风速 (0xBE)
+        case RAK_IPSO_WIND: {  // Wind speed (0xBE)
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -440,7 +440,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Wind speed: %.2f m/s", ws);
             break;
         }
-        case RAK_IPSO_WIND_DIR: {  // 风向 (0xBF)
+        case RAK_IPSO_WIND_DIR: {  // Wind direction (0xBF)
             if (len < 3)
                 break;
             uint16_t raw = (msg[2] << 8) + msg[1];
@@ -448,7 +448,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Wind direction: %u deg", (unsigned)(raw % 360));
             break;
         }
-        case RAK_IPSO_PYRANOMETER: {  // 日照强度 (0xC3)
+        case RAK_IPSO_PYRANOMETER: {  // Pyranometer (0xC3)
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -456,7 +456,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Pyranometer radiation: %.1f", env.radiation.value);
             break;
         }
-        case RAK_IPSO_HP_PH: {  // 土壤 pH (0xC1)
+        case RAK_IPSO_HP_PH: {  // Soil pH (0xC1)
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -469,7 +469,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Soil pH: %.2f", ph);
             break;
         }
-        case RAK_IPSO_ACCELEROMETER: {  // 三轴加速度 (0x71)
+        case RAK_IPSO_ACCELEROMETER: {  // 3-axis accelerometer (0x71)
             if (len < 7)
                 break;
             int16_t x = (int16_t)((msg[2] << 8) + msg[1]);
@@ -483,7 +483,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Accelerometer (0x71): X=%.3f Y=%.3f Z=%.3f", env.accel.x, env.accel.y, env.accel.z);
             break;
         }
-        case RAK_IPSO_SALINITY: {  // 盐度 (0x13)，0.01 缩放（依据传感器）
+        case RAK_IPSO_SALINITY: {  // Salinity (0x13), 0.01 scale
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -491,7 +491,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Salinity: %.2f (raw units)", env.salinity.value);
             break;
         }
-        case RAK_IPSO_EC: {  // 电导率 EC (0xC0)，0.01 缩放（依据传感器）
+        case RAK_IPSO_EC: {  // Conductivity EC (0xC0), 0.01 scale
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
@@ -533,9 +533,10 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
 }
 
 /**
- * 一线 RX 任务（由 Periodic 周期性调用）：从半双工串口读入字节、按 0x7E 定界组帧、
- * 调用 protocol process 解析并触发 onewire_evt。含溢出恢复、能力帧热插拔 PID 解析。
- * 返回值：建议下次调用间隔(ms)，有数据时 5ms、空闲时 40ms，以平衡及时性与 CPU 占用。
+ * 1-Wire RX task (called periodically by Periodic): read bytes from half-duplex UART,
+ * frame by 0x7E delimiter, call protocol process and onewire_evt. Includes overflow
+ * recovery and capability-frame hot-plug PID parse. Returns suggested next call interval
+ * (ms): 5 ms when active, 40 ms when idle.
  */
 static int32_t onewireRxHandle()
 {
@@ -679,9 +680,9 @@ static int32_t onewireRxHandle()
 }
 
 /**
- * 一线轮询任务（由 Periodic 周期性调用）：在链路空闲时按周期发 get.data(pid) 拉取传感器数据。
- * 含热插拔监听窗口（60s 一次 3s 不发送）、发现阶段 get.data(0x01..0x04)、常规 Round-Robin 轮询（约 1.5s/pid）。
- * 返回值：建议下次调用间隔(ms)，用于控制发送节奏与半双工避让。
+ * 1-Wire poll task (called periodically): send get.data(pid) when link is idle.
+ * Includes hot-plug listen window (3 s no TX every 60 s), discovery get.data(0x01..0x04),
+ * and round-robin poll (~1.5 s per PID). Returns suggested next call interval (ms).
  */
 static int32_t onewirePollHandle()
 {
@@ -776,7 +777,7 @@ static int32_t onewirePollHandle()
     return 150; // slower loop for command pacing
 }
 
-/** 首次调用时初始化一线串口、协议与 RX/Poll 两个 Periodic 任务；之后仅返回默认读间隔 */
+/** On first call: init 1-Wire UART, protocol, and RX/Poll Periodics; then just return default read interval. */
 int32_t RAKSensorHub::runOnce()
 {
     LOG_INFO("RAKSensorHub: runOnce...");
@@ -797,13 +798,13 @@ int32_t RAKSensorHub::runOnce()
     return DEFAULT_SENSOR_MINIMUM_WAIT_TIME_BETWEEN_READS;
 }
 
-/** 传感器初始化预留接口，当前 RAK 一线 Hub 无需额外配置 */
+/** Sensor setup placeholder; RAK 1-Wire hub needs no extra config. */
 void RAKSensorHub::setup()
 {
     // Set up oversampling and filter initialization
 }
 
-/** 将 env 缓存中未过期的环境量填入 measurement->variant.environment_metrics（温湿度、气压、风速风向、土壤湿度、辐射等）；含电源电压/电流。返回是否有任意字段被填充 */
+/** Fill measurement->variant.environment_metrics from env cache (temp, humidity, pressure, wind, soil, radiation, power). Returns true if any field was set. */
 bool RAKSensorHub::getMetrics(meshtastic_Telemetry *measurement)
 {
     bool any = false;
@@ -834,18 +835,23 @@ bool RAKSensorHub::getMetrics(meshtastic_Telemetry *measurement)
         any = true;
     }
     if (scalarFresh(env.wind_speed, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_wind_speed = true;
         measurement->variant.environment_metrics.wind_speed = env.wind_speed.value;
         any = true;
     }
     if (scalarFresh(env.wind_direction, now, maxAgeMs)) {
-        measurement->variant.environment_metrics.wind_direction = (uint32_t)env.wind_direction.value;
+        measurement->variant.environment_metrics.has_wind_direction = true;
+        measurement->variant.environment_metrics.wind_direction = (uint16_t)(env.wind_direction.value <= 360 ? env.wind_direction.value : 0);
         any = true;
     }
     if (scalarFresh(env.soil_moisture, now, maxAgeMs)) {
-        measurement->variant.environment_metrics.soil_moisture = (uint32_t)env.soil_moisture.value;
+        measurement->variant.environment_metrics.has_soil_moisture = true;
+        float v = env.soil_moisture.value;
+        measurement->variant.environment_metrics.soil_moisture = (uint8_t)(v < 0 ? 0 : (v > 100 ? 100 : (uint32_t)v));
         any = true;
     }
     if (scalarFresh(env.radiation, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_radiation = true;
         measurement->variant.environment_metrics.radiation = env.radiation.value;
         any = true;
     }
@@ -853,31 +859,31 @@ bool RAKSensorHub::getMetrics(meshtastic_Telemetry *measurement)
     return any;
 }
 
-/** 返回 RAK 电源模块上报的母线电压，单位 mV（来自 IPSO 0xB9 DC_VOLTAGE） */
+/** Bus voltage in mV from RAK power module (IPSO 0xB9 DC_VOLTAGE). */
 uint16_t RAKSensorHub::getBusVoltageMv()
 {
     return power.volMv;
 }
 
-/** 返回 RAK 电源模块上报的母线电流，单位 mA（来自 IPSO 0xB8 DC_CURRENT） */
+/** Bus current in mA from RAK power module (IPSO 0xB8 DC_CURRENT). */
 int16_t RAKSensorHub::getCurrentMa()
 {
     return power.curMa;
 }
 
-/** 返回 RAK 电源模块上报的电池电量百分比 0..100（来自 IPSO 0xBA CAPACITY） */
+/** Battery capacity 0..100 % from RAK power module (IPSO 0xBA CAPACITY). */
 int RAKSensorHub::getBusBatteryPercent()
 {
     return (int)power.percent;
 }
 
-/** 根据电流是否大于 0 判断是否处于充电状态 */
+/** True if current > 0 (charging). */
 bool RAKSensorHub::isCharging()
 {
     return (power.curMa > 0) ? true : false;
 }
 
-/** 由 onewire_evt 在收到有效传感器数据时调用，用于更新 TelemetrySensor 的 lastRead 时间戳 */
+/** Called from onewire_evt when valid sensor data is received; updates TelemetrySensor lastRead. */
 void RAKSensorHub::setLastRead(uint32_t lastRead)
 {
     this->lastRead = lastRead;
