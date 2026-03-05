@@ -69,5 +69,3 @@ Configuration Insights: If you have experience configuring Probe IO without WisT
 Sensor Compatibility: Let us know which RAK sensors or third-party probes you've tested and whether they worked.
 
 We are actively working on stabilizing the configuration methods and will provide updates as progress is made.
-
-Feel free to modify the tone and details to better fit your style. This draft provides a clear and honest overview of your branch's current state.
