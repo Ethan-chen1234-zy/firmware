@@ -138,6 +138,10 @@ extern void drawCommonHeader(OLEDDisplay *display, int16_t x, int16_t y, const c
 #include "Sensor/BH1750Sensor.h"
 #endif
 
+#ifdef HAS_RAKHUB
+#include "Sensor/RAKSensorHub.h"
+#endif
+
 #define FAILED_STATE_SENSOR_READ_MULTIPLIER 10
 #define DISPLAY_RECEIVEID_MEASUREMENTS_ON_SCREEN true
 
@@ -299,6 +303,10 @@ int32_t EnvironmentTelemetryModule::runOnce()
 #ifdef HAS_RAKPROT
             if (rak9154Sensor.hasSensor())
                 result = rak9154Sensor.runOnce();
+#endif
+#ifdef HAS_RAKHUB
+            if (rakSensorHub.hasSensor())
+                result = rakSensorHub.runOnce();
 #endif
 #endif
         }
@@ -570,6 +578,13 @@ bool EnvironmentTelemetryModule::getEnvironmentTelemetry(meshtastic_Telemetry *m
 #ifdef HAS_RAKPROT
     if (rak9154Sensor.hasSensor()) {
         get_metrics = rak9154Sensor.getMetrics(m);
+        valid = valid || get_metrics;
+        hasSensor = true;
+    }
+#endif
+#ifdef HAS_RAKHUB
+    if (rakSensorHub.hasSensor()) {
+        get_metrics = rakSensorHub.getMetrics(m);
         valid = valid || get_metrics;
         hasSensor = true;
     }
