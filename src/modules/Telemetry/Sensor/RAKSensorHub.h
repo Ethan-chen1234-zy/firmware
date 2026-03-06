@@ -16,16 +16,16 @@ struct ScalarReading {
 
 // 3-axis sensor (e.g. accelerometer)
 struct AccelReading {
-    float x = 0.0f, y = 0.0f, z = 0.0f;
-    uint32_t lastUpdateMs = 0;
+    float x = 0.0f, y = 0.0f, z = 0.0f;  
+    uint32_t lastUpdateMs = 0;  
     bool valid = false;
 };
 
 // Power module reading (RAK9154 etc., from IPSO 0xB8/0xB9/0xBA): bus voltage, current, capacity percent
 struct HubPower {
-    uint16_t volMv = 0;    // Bus voltage mV
-    int16_t curMa = 0;     // Bus current mA
-    uint8_t percent = 0;   // Capacity 0..100
+    uint16_t volMv = 0;    // 0xB9 Bus voltage mV
+    int16_t curMa = 0;     // 0xB8 Bus current mA
+    uint8_t percent = 0;   // 0xBA Capacity 0..100
 };
 
 /*
