@@ -55,8 +55,8 @@ static inline bool scalarFresh(const ScalarReading &r, uint32_t nowMs, uint32_t 
 // ----- Probe and polling state -----
 static std::set<uint8_t> provision_list;  // Set of registered probe PIDs (from ADD_PID / capability hot-plug)
 static std::set<uint8_t> sid_seen;         // SIDs seen so far (reserved)
-static int pid_delta = 0;                  // Last time we advanced poll PID (for 1500 ms interval)
-static int data_delta = 0;                 // Reserved
+static uint32_t pid_delta = 0;             // Last time we advanced poll PID (for 1500 ms interval)
+static uint32_t data_delta = 0;            // Reserved
 
 // ----- Timestamps (RX/TX pacing, timeouts, idle detection) -----
 static uint32_t last_poll_time = 0;   // Last time we sent get.data poll
@@ -64,6 +64,7 @@ static uint32_t last_tx_time = 0;     // Last byte sent (half-duplex: must not o
 static uint32_t last_rx_time = 0;     // Last byte received
 static uint32_t last_byte_time = 0;   // Last byte written to buff (for idle discard)
 static uint32_t last_err_time = 0;    // Last checksum/sequence error (briefly stop TX after error)
+static uint32_t last_capability_time = 0; // Last time we saw a capability/provision-like frame (used to quiet TX during join)
 
 // ----- Request/response state (half-duplex: only one outstanding request) -----
 static bool awaiting_rsp = false;          // Waiting for probe response
@@ -77,8 +78,8 @@ static uint8_t last_sent_pid = 0;
 static bool processing_frame = false;        // Inside process()
 static bool frame_error_during_process = false; // CHKSUM/SEQ error occurred during process
 
-static int sid_queue_delta = 0;  // Reserved
-static int status_delta = 0;     // Last time we logged status (about every 5 s)
+static uint32_t sid_queue_delta = 0;  // Reserved
+static uint32_t status_delta = 0;     // Last time we logged status (about every 5 s)
 
 // Hot-plug: periodic listen window (no TX) so new probes can send capability without OVF/collision
 static const uint32_t LISTEN_WINDOW_INTERVAL_MS = 60000;  // every 60 s
@@ -197,7 +198,8 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             if (len < 2)
                 break;
             uint8_t hum_raw = msg[1];
-            float humidity = hum_raw / 1.0f;
+            // RAK2560 docs: IPSO 0x68 has 0.5 %RH resolution per bit (0..100 %RH -> raw 0..200)
+            float humidity = hum_raw / 2.0f;
             if (humidity < 0.0f || humidity > 100.0f) {
                 LOG_INFO("Ignore humidity sensor value out of range: %.2f %%", humidity);
                 break;
@@ -268,7 +270,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Pyranometer radiation: %.1f", env.radiation.value);
             break;
         }
-        case RAK_IPSO_CAPACITY:  // Capacity percent (0–100 %)
+        case RAK_IPSO_CAPACITY:  // Capacity percent (0–100 %)  0xBA
             if (len < 2)
                 break;
             power.percent = msg[1];
@@ -277,14 +279,14 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             }
             LOG_INFO("Battery capacity: %u %%", (unsigned)power.percent);
             break;
-        case RAK_IPSO_DC_CURRENT:  // DC current mA
+        case RAK_IPSO_DC_CURRENT:  // DC current mA 0xB8
             if (len < 3)
                 break;
             power.curMa = (msg[2] << 8) + msg[1];
             LOG_INFO("Battery current raw: %d mA", (int)power.curMa);
             LOG_INFO("Battery current: %.3f A", (float)power.curMa / 1000.0f);
             break;
-        case RAK_IPSO_DC_VOLTAGE:  // DC voltage mV (raw*10)
+        case RAK_IPSO_DC_VOLTAGE:  // DC voltage mV (raw*10) 0xB9
             if (len < 3)
                 break;
             power.volMv = (msg[2] << 8) + msg[1];
@@ -323,12 +325,13 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Salinity: %.2f (raw units)", env.salinity.value);
             break;
         }
-        case RAK_IPSO_EC: {  // Conductivity EC (0xC0), 0.01 scale
+        case RAK_IPSO_EC: {  // Conductivity EC (0xC0), 0.001 mS/cm (0.001 µS/cm per bit)
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
-            setScalar(env.ec, raw / 100.0f, millis());
-            LOG_INFO("EC: %.2f (raw units)", env.ec.value);
+            // According to High-Precision-EC spec: 0.001 µS/cm per bit -> 0.001 mS/cm
+            setScalar(env.ec, raw / 1000.0f, millis());
+            LOG_INFO("EC: %.3f (mS/cm units)", env.ec.value);
             break;
         }
         default:
@@ -363,7 +366,8 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             if (len < 2)
                 break;
             uint8_t hum_raw = msg[1];
-            float humidity = hum_raw / 1.0f;
+            // RAK2560 docs: IPSO 0x68 has 0.5 %RH resolution per bit (0..100 %RH -> raw 0..200)
+            float humidity = hum_raw / 2.0f;
             if (humidity < 0.0f || humidity > 100.0f) {
                 LOG_INFO("Ignore humidity value out of range: %.2f %%", humidity);
                 break;
@@ -417,13 +421,13 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         case RAK_IPSO_DC_CURRENT:  // DC current
             if (len < 3)
                 break;
-            power.curMa = (msg[1] << 8) + msg[2];
+            power.curMa = (msg[2] << 8) + msg[1];
             LOG_INFO("Battery current: %.3f A", (float)power.curMa / 1000.0f);
             break;
         case RAK_IPSO_DC_VOLTAGE:  // DC voltage
             if (len < 3)
                 break;
-            power.volMv = (msg[1] << 8) + msg[2];
+            power.volMv = (msg[2] << 8) + msg[1];
             power.volMv *= 10;
             LOG_INFO("Battery voltage: %.2f V", (float)power.volMv / 1000.0f);
             break;
@@ -491,12 +495,12 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Salinity: %.2f (raw units)", env.salinity.value);
             break;
         }
-        case RAK_IPSO_EC: {  // Conductivity EC (0xC0), 0.01 scale
+        case RAK_IPSO_EC: {  // Conductivity EC (0xC0), 0.001 mS/cm (0.001 µS/cm per bit)
             if (len < 3)
                 break;
             int16_t raw = (msg[2] << 8) + msg[1];
-            setScalar(env.ec, raw / 100.0f, millis());
-            LOG_INFO("EC: %.2f (raw units)", env.ec.value);
+            setScalar(env.ec, raw / 1000.0f, millis());
+            LOG_INFO("EC: %.3f (mS/cm units)", env.ec.value);
             break;
         }
         default:
@@ -613,6 +617,7 @@ static int32_t onewireRxHandle()
         // Fallback: Parse capability frame (0x45/0x4D). Protocol lib may not emit ADD_PID (hot-plug).
         // PID at buff[34]; some probes use buff[33]=0xFF. 0xFF = broadcast -> assign next free PID.
         if (total_needed >= 36 && buff[3] == 0x02) {
+            last_capability_time = now;
             uint8_t pid = buff[34];
             if (pid == 0 || pid == 0xFF)
                 pid = buff[33];
@@ -632,15 +637,20 @@ static int32_t onewireRxHandle()
                 provision_list.insert(pid);
                 LOG_INFO("+BOOT:PID[%02x] from capability (len=%u) hot-plug", pid, (unsigned)payload_len);
             }
+            // Quiet TX briefly after capability traffic to reduce chance of colliding with probe join/provision handshake.
+            if (listen_window_until < now + 800) {
+                listen_window_until = now + 800;
+            }
         }
 
-        // Lightweight frame prefix log (first 8 bytes) for field diagnosis
+        // Lightweight frame prefix log (first 8 bytes) for field diagnosis.
+        // Keep at DEBUG to avoid impacting 1-Wire timing (serial logging can cause RX overflow / join instability).
         if (total_needed >= 8) {
-            LOG_INFO("+RX:len=%u %02x %02x %02x %02x %02x %02x %02x %02x", (unsigned)total_needed, (unsigned)buff[0],
-                     (unsigned)buff[1], (unsigned)buff[2], (unsigned)buff[3], (unsigned)buff[4], (unsigned)buff[5],
-                     (unsigned)buff[6], (unsigned)buff[7]);
+            LOG_DEBUG("+RX:len=%u %02x %02x %02x %02x %02x %02x %02x %02x", (unsigned)total_needed, (unsigned)buff[0],
+                      (unsigned)buff[1], (unsigned)buff[2], (unsigned)buff[3], (unsigned)buff[4], (unsigned)buff[5],
+                      (unsigned)buff[6], (unsigned)buff[7]);
         } else {
-            LOG_INFO("+RX:len=%u", (unsigned)total_needed);
+            LOG_DEBUG("+RX:len=%u", (unsigned)total_needed);
         }
         const uint16_t prev_len = bufflen;
         processing_frame = true;
@@ -702,6 +712,11 @@ static int32_t onewirePollHandle()
     }
     if (now < listen_window_until) {
         return 150; // no poll/TX; let onewireRxHandle receive unsolicited capability
+    }
+    // If we are seeing capability/provision traffic but haven't provisioned a PID yet, stay quiet for a short time.
+    // This helps avoid repeated "register/provision" loops under heavy system load (e.g. when App is connected).
+    if (provision_list.empty() && last_capability_time != 0 && (now - last_capability_time) < 1500) {
+        return 150;
     }
 
     // Avoid transmitting while bytes are still arriving. At 9600bps one byte is ~1ms,
@@ -812,47 +827,47 @@ bool RAKSensorHub::getMetrics(meshtastic_Telemetry *measurement)
     const uint32_t maxAgeMs = 60000;
 
     if (getBusVoltageMv() > 0) {
-        measurement->variant.environment_metrics.has_voltage = true;
-        measurement->variant.environment_metrics.has_current = true;
-        measurement->variant.environment_metrics.voltage = (float)getBusVoltageMv() / 1000;
-        measurement->variant.environment_metrics.current = (float)getCurrentMa() / 1000;
+        measurement->variant.environment_metrics.has_voltage = true;   // Voltage in V from RAK power module (IPSO 0xB9 DC_VOLTAGE).
+        measurement->variant.environment_metrics.has_current = true;   // Current in A from RAK power module (IPSO 0xB8 DC_CURRENT).
+        measurement->variant.environment_metrics.voltage = (float)getBusVoltageMv() / 1000;   
+        measurement->variant.environment_metrics.current = (float)getCurrentMa() / 1000;  
         any = true;
     }
 
     if (scalarFresh(env.temperature, now, maxAgeMs)) {
         measurement->variant.environment_metrics.has_temperature = true;
-        measurement->variant.environment_metrics.temperature = env.temperature.value;
+        measurement->variant.environment_metrics.temperature = env.temperature.value;   // Temperature in °C from RAK environmental sensor (IPSO 0x67 TEMPERATURE).
         any = true;
     }
     if (scalarFresh(env.humidity, now, maxAgeMs)) {
         measurement->variant.environment_metrics.has_relative_humidity = true;
-        measurement->variant.environment_metrics.relative_humidity = env.humidity.value;
+        measurement->variant.environment_metrics.relative_humidity = env.humidity.value;   // Humidity in % from RAK environmental sensor (IPSO 0x68 RELATIVE_HUMIDITY).
         any = true;
     }
     if (scalarFresh(env.pressure, now, maxAgeMs)) {
         measurement->variant.environment_metrics.has_barometric_pressure = true;
-        measurement->variant.environment_metrics.barometric_pressure = env.pressure.value;
+        measurement->variant.environment_metrics.barometric_pressure = env.pressure.value;   // Pressure in hPa from RAK environmental sensor (IPSO 0x73 BAROMETRIC_PRESSURE).
         any = true;
     }
     if (scalarFresh(env.wind_speed, now, maxAgeMs)) {
         measurement->variant.environment_metrics.has_wind_speed = true;
-        measurement->variant.environment_metrics.wind_speed = env.wind_speed.value;
+        measurement->variant.environment_metrics.wind_speed = env.wind_speed.value;   // Wind speed in m/s from RAK environmental sensor (IPSO 0xBE WIND_SPEED).
         any = true;
     }
     if (scalarFresh(env.wind_direction, now, maxAgeMs)) {
         measurement->variant.environment_metrics.has_wind_direction = true;
-        measurement->variant.environment_metrics.wind_direction = (uint16_t)(env.wind_direction.value <= 360 ? env.wind_direction.value : 0);
+        measurement->variant.environment_metrics.wind_direction = (uint16_t)(env.wind_direction.value <= 360 ? env.wind_direction.value : 0);   // Wind direction in degrees from RAK environmental sensor (IPSO 0xBF WIND_DIRECTION).
         any = true;
     }
     if (scalarFresh(env.soil_moisture, now, maxAgeMs)) {
         measurement->variant.environment_metrics.has_soil_moisture = true;
         float v = env.soil_moisture.value;
-        measurement->variant.environment_metrics.soil_moisture = (uint8_t)(v < 0 ? 0 : (v > 100 ? 100 : (uint32_t)v));
+        measurement->variant.environment_metrics.soil_moisture = (uint8_t)(v < 0 ? 0 : (v > 100 ? 100 : (uint32_t)v));   // Soil moisture in % from RAK environmental sensor (IPSO 0x70 HIGH_PRECISION_HUMIDITY).
         any = true;
     }
     if (scalarFresh(env.radiation, now, maxAgeMs)) {
         measurement->variant.environment_metrics.has_radiation = true;
-        measurement->variant.environment_metrics.radiation = env.radiation.value;
+        measurement->variant.environment_metrics.radiation = env.radiation.value;   // Radiation in W/m² from RAK environmental sensor (IPSO 0xC3 PYRANOMETER).
         any = true;
     }
 
