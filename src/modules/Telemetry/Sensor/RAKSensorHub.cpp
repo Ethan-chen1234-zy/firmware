@@ -238,7 +238,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             if (len < 3)
                 break;
             uint16_t raw = (msg[2] << 8) + msg[1];
-            float co2 = raw / 100.0f;
+            float co2 = raw;
             if (co2 < 0.0f || co2 > 5000.0f) {
                 LOG_INFO("Ignore CO2 sensor value out of range: %.2f ppm", co2);
                 break;
@@ -412,7 +412,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             if (len < 3)
                 break;
             uint16_t raw = (msg[2] << 8) + msg[1];
-            float co2 = raw / 100.0f;
+            float co2 = raw;
             if (co2 < 0.0f || co2 > 5000.0f) {
                 LOG_INFO("Ignore CO2 sensor value out of range: %.2f ppm", co2);
                 break;
