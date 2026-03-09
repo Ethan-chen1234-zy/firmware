@@ -44,6 +44,7 @@ struct EnvCache {
     ScalarReading soil_ph;        // 0xC1 soil pH
     ScalarReading salinity;       // 0x13 salinity
     ScalarReading ec;             // 0xC0 conductivity μS/cm
+    ScalarReading co2;            // 0x7D co2 ppm
     AccelReading accel;           // 0x71 accelerometer m/s²
 };
 
