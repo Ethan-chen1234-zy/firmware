@@ -38,20 +38,6 @@ static HubPower power;
 // Environment sensor cache; add field in EnvCache and assign in switch when adding new IPSO
 static EnvCache env;
 
-/** Write a scalar sensor reading: update value, valid flag and last update time (used when parsing IPSO into env.*). */
-static inline void setScalar(ScalarReading &r, float v, uint32_t nowMs)
-{
-    r.value = v;
-    r.valid = true;
-    r.lastUpdateMs = nowMs;
-}
-
-/** Return true if scalar reading is within validity window: valid, non-zero timestamp, and not older than maxAgeMs. */
-static inline bool scalarFresh(const ScalarReading &r, uint32_t nowMs, uint32_t maxAgeMs)
-{
-    return r.valid && r.lastUpdateMs != 0 && (nowMs - r.lastUpdateMs) <= maxAgeMs;
-}
-
 // ----- Probe and polling state -----
 static std::set<uint8_t> provision_list;  // Set of registered probe PIDs (from ADD_PID / capability hot-plug)
 static std::set<uint8_t> sid_seen;         // SIDs seen so far (reserved)
@@ -128,6 +114,20 @@ static void advanceDataPollPid()
     } else {
         data_poll_pid_valid = getFirstProvisionPid(data_poll_pid);
     }
+}
+
+/** Write a scalar sensor reading: update value, valid flag and last update time (used when parsing IPSO into env.*). */
+static inline void setScalar(ScalarReading &r, float v, uint32_t nowMs)
+{
+    r.value = v;
+    r.valid = true;
+    r.lastUpdateMs = nowMs;
+}
+
+/** Return true if scalar reading is within validity window: valid, non-zero timestamp, and not older than maxAgeMs. */
+static inline bool scalarFresh(const ScalarReading &r, uint32_t nowMs, uint32_t maxAgeMs)
+{
+    return r.valid && r.lastUpdateMs != 0 && (nowMs - r.lastUpdateMs) <= maxAgeMs;
 }
 
 /**
@@ -217,7 +217,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
                 LOG_INFO("Ignore high precision humidity value out of range: %.1f %%", moisture);
                 break;
             }
-            setScalar(env.soil_moisture, moisture, millis());
+            setScalar(env.high_precision_humidity, moisture, millis());
             LOG_INFO("High precision humidity: %.1f %%", moisture);
             break;
         }
@@ -243,8 +243,11 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
                 LOG_INFO("Ignore CO2 sensor value out of range: %.2f ppm", co2);
                 break;
             }
-            setScalar(env.co2, co2, millis());
-            LOG_INFO("CO2 sensor: %.2f ppm", co2);  
+            // Do not overwrite with 0 (sensor may send 0 for "no data" or second channel)
+            if (co2 > 0.0f) {
+                setScalar(env.co2, co2, millis());
+                LOG_INFO("CO2 sensor: %.2f ppm", co2);
+            }
             break;
         }
         case RAK_IPSO_WIND: {  // Wind speed (0xBE), 0.01 m/s
@@ -271,35 +274,59 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         case RAK_IPSO_PYRANOMETER: {  // Pyranometer / radiation (0xC3)
             if (len < 3)
                 break;
-            int16_t raw = (msg[2] << 8) + msg[1];
-            setScalar(env.radiation, raw / 10.0f, millis());
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            // RK200-03 sample indicates factor=1 => raw is W/m² directly
+            float rad = (float)raw;
+            // User-provided valid range: 0..2000 W/m²
+            if (rad < 0.0f || rad > 2000.0f) {
+                LOG_INFO("Ignore pyranometer radiation value out of range: %.1f W/m2", rad);
+                break;
+            }
+            setScalar(env.radiation, rad, millis());
             LOG_INFO("Pyranometer radiation: %.1f", env.radiation.value);
             break;
         }
-        case RAK_IPSO_CAPACITY:  // Capacity percent (0–100 %)  0xBA
+        // RAK9154 / power module mapping (per RAK docs and existing RAK9154Sensor):
+        // - 0xB8 (RAK_IPSO_CAPACITY): Battery SOC %, 1 byte 0..100
+        // - 0xB9 (RAK_IPSO_DC_CURRENT): Battery current, raw * 0.01 A
+        // - 0xBA (RAK_IPSO_DC_VOLTAGE): Battery voltage, raw * 0.01 V
+        case RAK_IPSO_CAPACITY: { // 0xB8 Battery SOC 0..100 %
             if (len < 2)
                 break;
             power.percent = msg[1];
-            if (power.percent > 100) {
+            if (power.percent > 100)
                 power.percent = 100;
-            }
             LOG_INFO("Battery capacity: %u %%", (unsigned)power.percent);
             break;
-        case RAK_IPSO_DC_CURRENT:  // DC current mA 0xB8
+        }
+        case RAK_IPSO_DC_CURRENT: { // 0xB9 Battery current raw * 0.01 A
             if (len < 3)
                 break;
-            power.curMa = (msg[2] << 8) + msg[1];
-            LOG_INFO("Battery current raw: %d mA", (int)power.curMa);
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            float amps = raw * 0.01f;
+            // Datasheet: operating current is within a few tens of amps; reject absurd spikes
+            if (amps < -50.0f || amps > 50.0f) {
+                LOG_INFO("Ignore battery current out of range: %.3f A", amps);
+                break;
+            }
+            power.curMa = (int16_t)(amps * 1000.0f);
             LOG_INFO("Battery current: %.3f A", (float)power.curMa / 1000.0f);
             break;
-        case RAK_IPSO_DC_VOLTAGE:  // DC voltage mV (raw*10) 0xB9
+        }
+        case RAK_IPSO_DC_VOLTAGE: { // 0xBA Battery voltage raw * 0.01 V
             if (len < 3)
                 break;
-            power.volMv = (msg[2] << 8) + msg[1];
-            power.volMv *= 10;
-            LOG_INFO("Battery voltage raw: %u mV", (unsigned)power.volMv);
-            LOG_INFO("Battery voltage: %.2f V", (float)power.volMv / 1000.0f);
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            float volts = raw * 0.01f;
+            // RAK9154 output spec: approx 9..13.2 V; accept a safe wider band and drop spikes
+            if (volts < 0.0f || volts > 20.0f) {
+                LOG_INFO("Ignore battery voltage out of range: %.2f V", volts);
+                break;
+            }
+            power.volMv = (uint16_t)(volts * 1000.0f);
+            LOG_INFO("Battery voltage: %.2f V", volts);
             break;
+        }
         case RAK_IPSO_HP_PH: {  // High-precision pH (0xC1), 0.01 resolution
             if (len < 3)
                 break;
@@ -391,7 +418,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
                 LOG_INFO("Ignore high precision humidity value out of range: %.1f %%", moisture);
                 break;
             }
-            setScalar(env.soil_moisture, moisture, millis());
+            setScalar(env.high_precision_humidity, moisture, millis());
             LOG_INFO("High precision humidity: %.1f %%", moisture);
             break;
         }
@@ -417,32 +444,49 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
                 LOG_INFO("Ignore CO2 sensor value out of range: %.2f ppm", co2);
                 break;
             }
-            setScalar(env.co2, co2, millis());
-            LOG_INFO("CO2 sensor: %.2f ppm", co2);
+            if (co2 > 0.0f) {
+                setScalar(env.co2, co2, millis());
+                LOG_INFO("CO2 sensor: %.2f ppm", co2);
+            }
             break;
         }
-        case RAK_IPSO_CAPACITY:  // Capacity percent
+        case RAK_IPSO_CAPACITY: { // 0xB8 Battery SOC 0..100 %
             if (len < 2)
                 break;
             power.percent = msg[1];
-            if (power.percent > 100) {
+            if (power.percent > 100)
                 power.percent = 100;
-            }
             LOG_INFO("Battery capacity: %u %%", (unsigned)power.percent);
             break;
-        case RAK_IPSO_DC_CURRENT:  // DC current
+        }
+        case RAK_IPSO_DC_CURRENT: { // 0xB9 Battery current raw * 0.01 A
             if (len < 3)
                 break;
-            power.curMa = (msg[2] << 8) + msg[1];
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            float amps = raw * 0.01f;
+            // Datasheet: operating current is within a few tens of amps; reject absurd spikes
+            if (amps < -50.0f || amps > 50.0f) {
+                LOG_INFO("Ignore battery current out of range: %.3f A", amps);
+                break;
+            }
+            power.curMa = (int16_t)(amps * 1000.0f);
             LOG_INFO("Battery current: %.3f A", (float)power.curMa / 1000.0f);
             break;
-        case RAK_IPSO_DC_VOLTAGE:  // DC voltage
+        }
+        case RAK_IPSO_DC_VOLTAGE: { // 0xBA Battery voltage raw * 0.01 V
             if (len < 3)
                 break;
-            power.volMv = (msg[2] << 8) + msg[1];
-            power.volMv *= 10;
-            LOG_INFO("Battery voltage: %.2f V", (float)power.volMv / 1000.0f);
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            float volts = raw * 0.01f;
+            // RAK9154 output spec: approx 9..13.2 V; accept a safe wider band and drop spikes
+            if (volts < 0.0f || volts > 20.0f) {
+                LOG_INFO("Ignore battery voltage out of range: %.2f V", volts);
+                break;
+            }
+            power.volMv = (uint16_t)(volts * 1000.0f);
+            LOG_INFO("Battery voltage: %.2f V", volts);
             break;
+        }
         case RAK_IPSO_WIND: {  // Wind speed (0xBE)
             if (len < 3)
                 break;
@@ -467,8 +511,13 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         case RAK_IPSO_PYRANOMETER: {  // Pyranometer (0xC3)
             if (len < 3)
                 break;
-            int16_t raw = (msg[2] << 8) + msg[1];
-            setScalar(env.radiation, raw / 10.0f, millis());
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            float rad = (float)raw;
+            if (rad < 0.0f || rad > 2000.0f) {
+                LOG_INFO("Ignore pyranometer radiation value out of range: %.1f W/m2", rad);
+                break;
+            }
+            setScalar(env.radiation, rad, millis());
             LOG_INFO("Pyranometer radiation: %.1f", env.radiation.value);
             break;
         }
@@ -627,8 +676,9 @@ static int32_t onewireRxHandle()
         }
 
         // Fallback: Parse capability frame (0x45/0x4D). Protocol lib may not emit ADD_PID (hot-plug).
+        // Frame format (per RAK docs): start(0xFF), lenL, lenH, type(0x45/0x4D), flag(0x02), ...
         // PID at buff[34]; some probes use buff[33]=0xFF. 0xFF = broadcast -> assign next free PID.
-        if (total_needed >= 36 && buff[3] == 0x02) {
+        if (total_needed >= 36 && (buff[3] == 0x45 || buff[3] == 0x4D)) {
             last_capability_time = now;
             uint8_t pid = buff[34];
             if (pid == 0 || pid == 0xFF)
@@ -831,12 +881,24 @@ void RAKSensorHub::setup()
     // Set up oversampling and filter initialization
 }
 
-/** Fill measurement->variant.environment_metrics from env cache (temp, humidity, pressure, wind, soil, radiation, power). Returns true if any field was set. */
+/** Fill measurement variant from env cache. When which_variant is air_quality_metrics, only CO2 is filled (ppm). Otherwise environment_metrics (temp, humidity, pressure, wind, soil, radiation, power). Returns true if any field was set. */
 bool RAKSensorHub::getMetrics(meshtastic_Telemetry *measurement)
 {
     bool any = false;
     const uint32_t now = millis();
-    const uint32_t maxAgeMs = 60000;
+    // Allow cached readings to be reused for a while because 1-Wire frames can be
+    // missed under BLE/app load. Five minutes keeps outdoor use stable.
+    const uint32_t maxAgeMs = 5 * 60 * 1000;
+
+    // CO2 is reported in AirQualityMetrics, not EnvironmentMetrics
+    if (measurement->which_variant == meshtastic_Telemetry_air_quality_metrics_tag) {
+        if (scalarFresh(env.co2, now, maxAgeMs)) {
+            measurement->variant.air_quality_metrics.has_co2 = true;
+            measurement->variant.air_quality_metrics.co2 = (uint32_t)(env.co2.value <= 0 ? 0 : (env.co2.value > 5000 ? 5000 : env.co2.value));
+            return true;
+        }
+        return false;
+    }
 
     if (getBusVoltageMv() > 0) {
         measurement->variant.environment_metrics.has_voltage = true;   // Voltage in V from RAK power module (IPSO 0xB9 DC_VOLTAGE).
@@ -871,10 +933,20 @@ bool RAKSensorHub::getMetrics(meshtastic_Telemetry *measurement)
         measurement->variant.environment_metrics.wind_direction = (uint16_t)(env.wind_direction.value <= 360 ? env.wind_direction.value : 0);   // Wind direction in degrees from RAK environmental sensor (IPSO 0xBF WIND_DIRECTION).
         any = true;
     }
-    if (scalarFresh(env.soil_moisture, now, maxAgeMs)) {
+    if (scalarFresh(env.high_precision_humidity, now, maxAgeMs)) {
+        // IPSO 0x70 is "high precision humidity" and is used by multiple sensors (soil / weather station).
+        // Expose it in both fields so clients can display it without special-casing.
+        float v = env.high_precision_humidity.value;
+
+        // Float humidity (%RH)
+        if (!measurement->variant.environment_metrics.has_relative_humidity) {
+            measurement->variant.environment_metrics.has_relative_humidity = true;
+            measurement->variant.environment_metrics.relative_humidity = v;
+        }
+
+        // Integer percent field (0..100)
         measurement->variant.environment_metrics.has_soil_moisture = true;
-        float v = env.soil_moisture.value;
-        measurement->variant.environment_metrics.soil_moisture = (uint8_t)(v < 0 ? 0 : (v > 100 ? 100 : (uint32_t)v));   // Soil moisture in % from RAK environmental sensor (IPSO 0x70 HIGH_PRECISION_HUMIDITY).
+        measurement->variant.environment_metrics.soil_moisture = (uint8_t)(v < 0 ? 0 : (v > 100 ? 100 : (uint32_t)v));
         any = true;
     }
     if (scalarFresh(env.radiation, now, maxAgeMs)) {

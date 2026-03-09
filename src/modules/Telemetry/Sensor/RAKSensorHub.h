@@ -21,11 +21,11 @@ struct AccelReading {
     bool valid = false;
 };
 
-// Power module reading (RAK9154 etc., from IPSO 0xB8/0xB9/0xBA): bus voltage, current, capacity percent
+// Power module reading  RAK9154 / power module mapping (per RAK docs and existing RAK9154Sensor):
 struct HubPower {
-    uint16_t volMv = 0;    // 0xB9 Bus voltage mV
-    int16_t curMa = 0;     // 0xB8 Bus current mA
-    uint8_t percent = 0;   // 0xBA Capacity 0..100
+    uint16_t volMv = 0;    // 0xBA Bus voltage mV
+    int16_t curMa = 0;     // 0xB9 Bus current mA
+    uint8_t percent = 0;   // 0xB8 Battery SOC 0..100 %
 };
 
 /*
@@ -34,18 +34,18 @@ struct HubPower {
  */
 // Environment sensor cache: all IPSO types in one place; add a field when adding a new sensor
 struct EnvCache {
-    ScalarReading temperature;     // 0x67 temperature °C
-    ScalarReading humidity;       // 0x68 humidity %
-    ScalarReading pressure;       // 0x73 pressure hPa
-    ScalarReading soil_moisture;  // 0x70 high-precision humidity %
-    ScalarReading wind_speed;     // 0xBE wind speed m/s
-    ScalarReading wind_direction; // 0xBF wind direction 0..360 °
-    ScalarReading radiation;      // 0xC3 radiation W/m²
-    ScalarReading soil_ph;        // 0xC1 soil pH
-    ScalarReading salinity;       // 0x13 salinity
-    ScalarReading ec;             // 0xC0 conductivity μS/cm
-    ScalarReading co2;            // 0x7D co2 ppm
-    AccelReading accel;           // 0x71 accelerometer m/s²
+    ScalarReading temperature;            // 0x67 temperature °C
+    ScalarReading humidity;              // 0x68 humidity %
+    ScalarReading pressure;              // 0x73 pressure hPa
+    ScalarReading high_precision_humidity; // 0x70 high-precision humidity % (高精度湿度)
+    ScalarReading wind_speed;            // 0xBE wind speed m/s
+    ScalarReading wind_direction;        // 0xBF wind direction 0..360 °
+    ScalarReading radiation;             // 0xC3 radiation W/m²
+    ScalarReading soil_ph;               // 0xC1 soil pH
+    ScalarReading salinity;              // 0x13 salinity
+    ScalarReading ec;                    // 0xC0 conductivity μS/cm
+    ScalarReading co2;                   // 0x7D co2 ppm
+    AccelReading accel;                  // 0x71 accelerometer m/s²
 };
 
 class RAKSensorHub : public TelemetrySensor, VoltageSensor, CurrentSensor
