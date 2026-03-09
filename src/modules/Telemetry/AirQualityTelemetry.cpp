@@ -35,6 +35,9 @@ static constexpr uint16_t TX_HISTORY_KEY_AIR_QUALITY_TELEMETRY = 0x8004;
 #if __has_include(<SensirionI2cScd30.h>)
 #include "Sensor/SCD30Sensor.h"
 #endif
+#if !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && defined(HAS_RAKHUB)
+#include "Sensor/RAKSensorHub.h"
+#endif
 
 void AirQualityTelemetryModule::i2cScanFinished(ScanI2C *i2cScanner)
 {
@@ -94,10 +97,15 @@ int32_t AirQualityTelemetryModule::runOnce()
         if (moduleConfig.telemetry.air_quality_enabled) {
             LOG_INFO("Air quality Telemetry: init");
 
-            // check if we have at least one sensor
+            // check if we have at least one sensor (I2C or RAK Hub CO2)
             if (!sensors.empty()) {
                 result = DEFAULT_SENSOR_MINIMUM_WAIT_TIME_BETWEEN_READS;
             }
+#if !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && defined(HAS_RAKHUB) // RAK Hub CO2 is also a sensor （RK300-03）
+            else if (rakSensorHub.hasSensor()) {
+                result = DEFAULT_SENSOR_MINIMUM_WAIT_TIME_BETWEEN_READS;
+            }
+#endif
         }
 
         // it's possible to have this module enabled, only for displaying values on the screen.
@@ -320,6 +328,13 @@ bool AirQualityTelemetryModule::getAirQualityTelemetry(meshtastic_Telemetry *m)
         valid = valid || sensor_get;
         hasSensor = true;
     }
+#if !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && defined(HAS_RAKHUB)
+    if (rakSensorHub.hasSensor()) {
+        sensor_get = rakSensorHub.getMetrics(m);
+        valid = valid || sensor_get;
+        hasSensor = true;
+    }
+#endif
 
     return valid && hasSensor;
 }
