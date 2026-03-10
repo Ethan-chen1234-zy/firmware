@@ -149,6 +149,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define TX_GAIN_LORA 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 10, 10, 9, 9, 8, 7
 #endif
 
+#ifdef USE_KCT8103L_PA
+// Power Amps are often non-linear, so we can use an array of values for the power curve
+#define NUM_PA_POINTS 22
+#define TX_GAIN_LORA 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 13, 13, 13, 12, 12, 11, 10, 9, 8, 7
+#endif
+
 #ifdef RAK13302
 #define NUM_PA_POINTS 22
 #define TX_GAIN_LORA 7, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 8
@@ -161,6 +167,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef TX_GAIN_LORA
 #define TX_GAIN_LORA 0
+#endif
+
+#ifndef HAS_LORA_FEM
+#define HAS_LORA_FEM 0
 #endif
 
 // -----------------------------------------------------------------------------
@@ -217,6 +227,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define SHTC3_ADDR 0x70
 #define LPS22HB_ADDR 0x5C
 #define LPS22HB_ADDR_ALT 0x5D
+#define SFA30_ADDR 0x5D
 #define SHT31_4x_ADDR 0x44
 #define SHT31_4x_ADDR_ALT 0x45
 #define PMSA003I_ADDR 0x12
@@ -233,6 +244,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define NAU7802_ADDR 0x2A
 #define MAX30102_ADDR 0x57
 #define SCD4X_ADDR 0x62
+#define CW2015_ADDR 0x62
 #define MLX90614_ADDR_DEF 0x5A
 #define CGRADSENS_ADDR 0x66
 #define LTR390UV_ADDR 0x53
@@ -241,6 +253,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define BQ27220_ADDR 0x55 // same address as TDECK_KB
 #define BQ25896_ADDR 0x6B
 #define LTR553ALS_ADDR 0x23
+#define SEN5X_ADDR 0x69
+#define SCD30_ADDR 0x61
 
 // -----------------------------------------------------------------------------
 // ACCELEROMETER
@@ -257,6 +271,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define BHI260AP_ADDR 0x28
 #define BMM150_ADDR 0x13
 #define DA217_ADDR 0x26
+#define BMI270_ADDR 0x68
+#define BMI270_ADDR_ALT 0x69
 
 // -----------------------------------------------------------------------------
 // LED
@@ -390,9 +406,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #ifndef HAS_RADIO
 #define HAS_RADIO 0
 #endif
-#ifndef HAS_RTC
-#define HAS_RTC 0
-#endif
 #ifndef HAS_CPU_SHUTDOWN
 #define HAS_CPU_SHUTDOWN 0
 #endif
@@ -428,11 +441,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define HAS_RGB_LED
 #endif
 
-#ifndef LED_STATE_OFF
-#define LED_STATE_OFF 0
-#endif
 #ifndef LED_STATE_ON
 #define LED_STATE_ON 1
+#endif
+#ifndef LED_STATE_OFF
+#define LED_STATE_OFF (LED_STATE_ON ^ 1)
+#endif
+
+#ifndef ledOff
+#define ledOff(pin) pinMode(pin, INPUT)
 #endif
 
 // default mapping of pins
