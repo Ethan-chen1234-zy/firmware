@@ -5,14 +5,13 @@
 #include "../mesh/generated/meshtastic/telemetry.pb.h"
 #include "RAKSensorHub.h"
 #include "TelemetrySensor.h"
+#include "concurrency/LockGuard.h"
 #include "concurrency/Periodic.h"
 #include <RAK-OneWireSerial.h>
 #include <onewire_master_protocol.h> // for DELIMTER/WAKEUPBYTE and frame layout
 
-#include <mutex>
-#include <queue>
-#include <set>
 #include <cstring>
+#include <set>
 
 using namespace concurrency;
 
@@ -198,8 +197,8 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             if (len < 2)
                 break;
             uint8_t hum_raw = msg[1];
-            // RAK2560 docs: IPSO 0x68 has 0.5 %RH resolution per bit (0..100 %RH -> raw 0..200)
-            float humidity = hum_raw / 2.0f;
+            // RAK2560 Sensor Data Format V0.11: IPSO 0x68 is 1 %RH per bit (0..100).
+            float humidity = (float)hum_raw;
             if (humidity < 0.0f || humidity > 100.0f) {
                 LOG_INFO("Ignore humidity sensor value out of range: %.2f %%", humidity);
                 break;
@@ -248,6 +247,24 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
                 setScalar(env.co2, co2, millis());
                 LOG_INFO("CO2 sensor: %.2f ppm", co2);
             }
+            break;
+        }
+        case RAK_IPSO_HP_EC: { // High-precision EC (0x7F), 4 bytes little-endian
+            if (len < 5)
+                break;
+            uint32_t raw = (uint32_t)msg[1] | ((uint32_t)msg[2] << 8) | ((uint32_t)msg[3] << 16) | ((uint32_t)msg[4] << 24);
+            // Keep same unit convention as existing EC handler: mS/cm (raw scaled by 1000).
+            if (raw == 0 && env.high_precision_ec.valid) {
+                LOG_INFO("High precision EC (0x7F): raw=0 (skip overwrite)");
+                break;
+            }
+            // RAK2560 Sensor Data Format V0.11: IPSO 0x7F is 0.001 uS/cm per bit.
+            // Convert to mS/cm: (raw * 0.001 uS/cm) / 1000 = raw / 1,000,000.
+            float ec_ms = raw / 1000000.0f;
+            setScalar(env.high_precision_ec, ec_ms, millis());
+            // Also populate env.ec so any existing consumers see EC even when only 0x7F is emitted.
+            setScalar(env.ec, ec_ms, millis());
+            LOG_INFO("High precision EC (0x7F): raw=%lu, %.3f (mS/cm units)", (unsigned long)raw, ec_ms);
             break;
         }
         case RAK_IPSO_WIND: {  // Wind speed (0xBE), 0.01 m/s
@@ -299,13 +316,12 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Battery capacity: %u %%", (unsigned)power.percent);
             break;
         }
-        case RAK_IPSO_DC_CURRENT: { // 0xB9 Battery current raw * 0.01 A
+        case RAK_IPSO_DC_CURRENT: { // 0xB9 Battery current raw * 0.01 A (unsigned; no negative display)
             if (len < 3)
                 break;
             uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
             float amps = raw * 0.01f;
-            // Datasheet: operating current is within a few tens of amps; reject absurd spikes
-            if (amps < -50.0f || amps > 50.0f) {
+            if (amps > 50.0f) {
                 LOG_INFO("Ignore battery current out of range: %.3f A", amps);
                 break;
             }
@@ -336,6 +352,24 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Soil pH: %.2f", ph);
             break;
         }
+        case RAK_IPSO_PH: {  // pH (0xC2), 0.1 resolution (per RAK sensor data format)
+            if (len < 3)
+                break;
+            int16_t raw = (msg[2] << 8) + msg[1];
+            // 0.1 pH per bit (e.g. raw=70 => pH=7.0)
+            if (raw == 0 && env.ph.valid) {
+                LOG_INFO("pH (0xC2): raw=0 (skip overwrite)");
+                break;
+            }
+            float ph = raw / 10.0f;
+            if (ph < 0.0f || ph > 14.0f) {
+                LOG_INFO("Ignore pH value out of range: %.2f", ph);
+                break;
+            }
+            setScalar(env.ph, ph, millis());
+            LOG_INFO("pH: %.2f", ph);
+            break;
+        }
         case RAK_IPSO_ACCELEROMETER: {  // 3-axis accelerometer (0x71), 6 bytes X,Y,Z int16
             if (len < 7)
                 break;
@@ -353,16 +387,27 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         case RAK_IPSO_SALINITY: {  // Salinity (0x13), 0.01 scale
             if (len < 3)
                 break;
-            int16_t raw = (msg[2] << 8) + msg[1];
-            setScalar(env.salinity, raw / 100.0f, millis());
-            LOG_INFO("Salinity: %.2f (raw units)", env.salinity.value);
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            // Some probes report 0 when the channel is not available; avoid overwriting a valid reading with 0.
+            if (raw == 0 && env.salinity.valid) {
+                LOG_INFO("Salinity: raw=0 (skip overwrite)");
+                break;
+            }
+            // Per sensor spec: 1 mg/L per bit, range 0..65535 mg/L.
+            setScalar(env.salinity, (float)raw, millis());
+            LOG_INFO("Salinity: %u mg/L", (unsigned)raw);
             break;
         }
         case RAK_IPSO_EC: {  // Conductivity EC (0xC0), 0.001 mS/cm (0.001 µS/cm per bit)
             if (len < 3)
                 break;
-            int16_t raw = (msg[2] << 8) + msg[1];
-            // According to High-Precision-EC spec: 0.001 µS/cm per bit -> 0.001 mS/cm
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            // Some probes report 0 when the channel is not available; avoid overwriting a valid reading with 0.
+            if (raw == 0 && env.ec.valid) {
+                LOG_INFO("EC: raw=0 (skip overwrite)");
+                break;
+            }
+            // Keep same unit convention as existing EC handler: mS/cm (raw scaled by 1000).
             setScalar(env.ec, raw / 1000.0f, millis());
             LOG_INFO("EC: %.3f (mS/cm units)", env.ec.value);
             break;
@@ -399,8 +444,8 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             if (len < 2)
                 break;
             uint8_t hum_raw = msg[1];
-            // RAK2560 docs: IPSO 0x68 has 0.5 %RH resolution per bit (0..100 %RH -> raw 0..200)
-            float humidity = hum_raw / 2.0f;
+            // RAK2560 Sensor Data Format V0.11: IPSO 0x68 is 1 %RH per bit (0..100).
+            float humidity = (float)hum_raw;
             if (humidity < 0.0f || humidity > 100.0f) {
                 LOG_INFO("Ignore humidity value out of range: %.2f %%", humidity);
                 break;
@@ -450,6 +495,20 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             }
             break;
         }
+        case RAK_IPSO_HP_EC: { // High-precision EC (0x7F), 4 bytes little-endian
+            if (len < 5)
+                break;
+            uint32_t raw = (uint32_t)msg[1] | ((uint32_t)msg[2] << 8) | ((uint32_t)msg[3] << 16) | ((uint32_t)msg[4] << 24);
+            if (raw == 0 && env.high_precision_ec.valid) {
+                LOG_INFO("High precision EC (0x7F): raw=0 (skip overwrite)");
+                break;
+            }
+            float ec_ms = raw / 1000000.0f;
+            setScalar(env.high_precision_ec, ec_ms, millis());
+            setScalar(env.ec, ec_ms, millis());
+            LOG_INFO("High precision EC (0x7F): raw=%lu, %.3f (mS/cm units)", (unsigned long)raw, ec_ms);
+            break;
+        }
         case RAK_IPSO_CAPACITY: { // 0xB8 Battery SOC 0..100 %
             if (len < 2)
                 break;
@@ -459,13 +518,12 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Battery capacity: %u %%", (unsigned)power.percent);
             break;
         }
-        case RAK_IPSO_DC_CURRENT: { // 0xB9 Battery current raw * 0.01 A
+        case RAK_IPSO_DC_CURRENT: { // 0xB9 Battery current raw * 0.01 A (unsigned; no negative display)
             if (len < 3)
                 break;
             uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
             float amps = raw * 0.01f;
-            // Datasheet: operating current is within a few tens of amps; reject absurd spikes
-            if (amps < -50.0f || amps > 50.0f) {
+            if (amps > 50.0f) {
                 LOG_INFO("Ignore battery current out of range: %.3f A", amps);
                 break;
             }
@@ -534,6 +592,23 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("Soil pH: %.2f", ph);
             break;
         }
+        case RAK_IPSO_PH: {  // pH (0xC2)
+            if (len < 3)
+                break;
+            int16_t raw = (msg[2] << 8) + msg[1];
+            if (raw == 0 && env.ph.valid) {
+                LOG_INFO("pH (0xC2): raw=0 (skip overwrite)");
+                break;
+            }
+            float ph = raw / 10.0f;
+            if (ph < 0.0f || ph > 14.0f) {
+                LOG_INFO("Ignore pH value out of range: %.2f", ph);
+                break;
+            }
+            setScalar(env.ph, ph, millis());
+            LOG_INFO("pH: %.2f", ph);
+            break;
+        }
         case RAK_IPSO_ACCELEROMETER: {  // 3-axis accelerometer (0x71)
             if (len < 7)
                 break;
@@ -551,15 +626,23 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         case RAK_IPSO_SALINITY: {  // Salinity (0x13), 0.01 scale
             if (len < 3)
                 break;
-            int16_t raw = (msg[2] << 8) + msg[1];
-            setScalar(env.salinity, raw / 100.0f, millis());
-            LOG_INFO("Salinity: %.2f (raw units)", env.salinity.value);
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.salinity.valid) {
+                LOG_INFO("Salinity: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.salinity, (float)raw, millis());
+            LOG_INFO("Salinity: %u mg/L", (unsigned)raw);
             break;
         }
         case RAK_IPSO_EC: {  // Conductivity EC (0xC0), 0.001 mS/cm (0.001 µS/cm per bit)
             if (len < 3)
                 break;
-            int16_t raw = (msg[2] << 8) + msg[1];
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.ec.valid) {
+                LOG_INFO("EC: raw=0 (skip overwrite)");
+                break;
+            }
             setScalar(env.ec, raw / 1000.0f, millis());
             LOG_INFO("EC: %.3f (mS/cm units)", env.ec.value);
             break;
@@ -606,7 +689,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
 static int32_t onewireRxHandle()
 {
     const uint32_t now = millis();
-    std::lock_guard<Lock> guard(onewireLock);
+    concurrency::LockGuard guard(&onewireLock);
 
 
     // Drain UART as fast as possible into our larger buffer
@@ -759,7 +842,7 @@ static int32_t onewireRxHandle()
 static int32_t onewirePollHandle()
 {
     const uint32_t now = millis();
-    std::lock_guard<Lock> guard(onewireLock);
+    concurrency::LockGuard guard(&onewireLock);
 
     // Additional information: If a buffer contains data and no new bytes are added for an extended period of time, the buffer is discarded (to prevent residual frames from blocking the buffer).
     if (bufflen > 0 && (now - last_byte_time) > 50) {
