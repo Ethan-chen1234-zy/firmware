@@ -38,11 +38,12 @@ struct EnvCache {
     ScalarReading humidity;              // 0x68 humidity %
     ScalarReading pressure;              // 0x73 pressure hPa
     ScalarReading high_precision_humidity; // 0x70 high-precision humidity % (高精度湿度)
+    ScalarReading moisture;               // local MODBUS mapping: soil/water content %
     ScalarReading high_precision_ec;     // 0x7F high-precision EC / conductivity (高精度EC)
     ScalarReading wind_speed;            // 0xBE wind speed m/s
     ScalarReading wind_direction;        // 0xBF wind direction 0..360 °
     ScalarReading radiation;             // 0xC3 radiation W/m²
-    ScalarReading soil_ph;               // 0xC1 soil pH
+    ScalarReading soil_ph;               // 0xC1 high-precision pH 
     ScalarReading ph;                    // 0xC2 pH
     ScalarReading salinity;              // 0x13 salinity mg/L
     ScalarReading ec;                    // 0xC0 conductivity μS/cm
