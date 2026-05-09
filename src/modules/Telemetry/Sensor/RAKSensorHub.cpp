@@ -17,6 +17,10 @@ using namespace concurrency;
 
 #define BOOT_DATA_REQ
 
+#ifndef RAK_SENSORHUB_DOWNLINK_POC
+#define RAK_SENSORHUB_DOWNLINK_POC 0
+#endif
+
 /** Construct RAK 1-Wire sensor hub (type SENSOR_UNSET, name "RAKSensorHub"); actual init in runOnce(). */
 RAKSensorHub::RAKSensorHub() : TelemetrySensor(meshtastic_TelemetrySensorType_SENSOR_UNSET, "RAKSensorHub") {}
 
@@ -71,6 +75,97 @@ static const uint32_t LISTEN_WINDOW_INTERVAL_MS = 60000;  // every 60 s
 static const uint32_t LISTEN_WINDOW_DURATION_MS = 3000;   // 3 s no TX
 static uint32_t last_listen_schedule = 0;
 static uint32_t listen_window_until = 0;
+
+#if RAK_SENSORHUB_DOWNLINK_POC
+static bool downlink_poc_pending = false;
+static bool downlink_poc_done = false;
+static uint8_t downlink_poc_pid = 0;
+static uint8_t downlink_poc_step = 0;
+
+static const char *iocFuncName(uint8_t funcode)
+{
+    switch (funcode) {
+    case IO_CFG:
+        return "IO_CFG";
+    case IO_ADDPOLL:
+        return "IO_ADDPOLL";
+    case IO_ADDPOLLEX:
+        return "IO_ADDPOLLEX";
+    case IO_ENABLEPOLL:
+        return "IO_ENABLEPOLL";
+    case IO_POLLTASK:
+        return "IO_POLLTASK";
+    case IO_RMPDEF:
+        return "IO_RMPDEF";
+    case IO_PSM:
+        return "IO_PSM";
+    case IO_CNT:
+        return "IO_CNT";
+    case IOPASSTHRH:
+        return "IOPASSTHRH";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void scheduleDownlinkPoc(uint8_t pid)
+{
+    if (pid == 0 || pid == PID_MASTER || downlink_poc_done || downlink_poc_pending)
+        return;
+
+    downlink_poc_pid = pid;
+    downlink_poc_step = 0;
+    downlink_poc_pending = true;
+    LOG_INFO("RAKSensorHub downlink POC scheduled: PID=0x%02x", pid);
+}
+
+static bool sendNextDownlinkPoc()
+{
+    rak_ioc_polltask_frame_t polltask;
+
+    if (!downlink_poc_pending || downlink_poc_done)
+        return false;
+
+    switch (downlink_poc_step) {
+    case 0:
+        // 清除RS485接口的默认配置（IPSO[00], IPSO[01], IPSO[02]等）
+        LOG_INFO("RAKSensorHub: IO_RMPDEF清除RS485默认配置");
+        RakSNHub_IOC_RmPollDef(downlink_poc_pid, IOC_RS485, 0);  // portid=0表示清除所有任务
+        break;
+    case 1:
+        LOG_INFO("RAKSensorHub JXBS-3001-EC IOC TX: IO_CFG RS485 9600:8:1:0");
+        RakSNHub_IOC_ConfigRS485(downlink_poc_pid, 9600, 8, 1, 0);
+        break;
+    case 2:
+        // Target ProbeIO core-1.2.27+: use IO_ADDPOLLEX so ProbeIO maps MODBUS -> "normal" IPSO (0x70/0x68/...)
+        // cmd is RAW binary bytes (not hex ASCII).
+        // Template example: "...:2:6:0.1:112:{PROFILE_NAME}" -> datatype=6, scale=0.1, IPSO=112(0x70)
+        {
+            static const uint8_t cmd[] = {0x01, 0x03, 0x00, 0x12, 0x00, 0x01};
+            LOG_INFO("RAKSensorHub JXBS-3001-EC IOC TX: IO_ADDPOLLEX task=1 cmd=01 03 00 12 00 01 period=60 timeout=5000 retry=2 scale=0.1 IPSO=112 datatype=6 name=GE");
+            RakSNHub_IOC_AddPollEx(downlink_poc_pid, IOC_RS485, 1, cmd, sizeof(cmd), 60, 5000, 2, 112, 0.1f, 6, "GE");
+        }
+        break;
+    case 3:
+        LOG_INFO("RAKSensorHub JXBS-3001-EC IOC TX: IO_ENABLEPOLL task=1 enable=1");
+        RakSNHub_IOC_EnablePoll(downlink_poc_pid, IOC_RS485, 1, 1);
+        break;
+    case 4:
+        LOG_INFO("RAKSensorHub JXBS-3001-EC IOC TX: IO_POLLTASK query task=0");
+        polltask.taskid = 0;
+        RakSNHub_Protocl_API.ioc.send(downlink_poc_pid, IO_POLLTASK, IOC_RS485, IOA_RSP, (const uint8_t *)&polltask, sizeof(polltask));
+        break;
+    default:
+        downlink_poc_pending = false;
+        downlink_poc_done = true;
+        LOG_INFO("RAKSensorHub JXBS-3001-EC minimal downlink POC queued all IOC commands");
+        return false;
+    }
+
+    downlink_poc_step++;
+    return true;
+}
+#endif
 
 /** Get first PID from provision list (poll start or reset when no current PID). */
 static bool getFirstProvisionPid(uint8_t &pid)
@@ -129,6 +224,109 @@ static inline bool scalarFresh(const ScalarReading &r, uint32_t nowMs, uint32_t 
     return r.valid && r.lastUpdateMs != 0 && (nowMs - r.lastUpdateMs) <= maxAgeMs;
 }
 
+static inline bool isAllZero(const uint8_t *p, uint16_t n)
+{
+    if (p == nullptr)
+        return true;
+    for (uint16_t i = 0; i < n; i++) {
+        if (p[i] != 0)
+            return false;
+    }
+    return true;
+}
+
+static bool parseDownlinkPocModbus(uint8_t taskId, uint8_t *msg, uint16_t len)
+{
+    const uint8_t *modbus = nullptr;
+    uint8_t modbusLen = 0;
+
+    if (len < 2 || msg[0] != RAK_IPSO_MODBUS)
+        return false;
+
+    // Many ProbeIO firmwares include a fixed 64-byte IPSO[F1] slot in get.data() responses even when no
+    // IOC upload data is pending. That slot is often all-zero. Do not treat it as a link error.
+    if (isAllZero(&msg[1], (uint16_t)(len - 1))) {
+        return false;
+    }
+
+    /* Two possible payload layouts exist:
+     * A) [F1][len][modbus...]
+     * B) [F1][taskId][type=F1][datalen][modbus...]
+     */
+    if (len >= 5 && msg[2] == RAK_IPSO_MODBUS && msg[3] <= (len - 4)) {
+        modbusLen = msg[3];
+        modbus = &msg[4];
+        taskId = msg[1];
+        LOG_DEBUG("JXBS-3001-EC MODBUS raw task=%u len=%u head=%02x %02x %02x %02x %02x %02x %02x",
+                  (unsigned)taskId, (unsigned)modbusLen,
+                  (unsigned)modbus[0], (unsigned)modbus[1], (unsigned)modbus[2],
+                  (unsigned)modbus[3], (unsigned)modbus[4], (unsigned)modbus[5], (unsigned)modbus[6]);
+    } else if (len >= 3 && msg[1] <= (len - 2)) {
+        modbusLen = msg[1];
+        modbus = &msg[2];
+        LOG_DEBUG("JXBS-3001-EC MODBUS raw task=%u len=%u head=%02x %02x %02x %02x %02x %02x %02x",
+                  (unsigned)taskId, (unsigned)modbusLen,
+                  (unsigned)modbus[0], (unsigned)modbus[1], (unsigned)modbus[2],
+                  (unsigned)modbus[3], (unsigned)modbus[4], (unsigned)modbus[5], (unsigned)modbus[6]);
+    } else {
+        modbusLen = (uint8_t)(len - 1);
+        modbus = &msg[1];
+    }
+
+    // If the "slot" is present but empty, skip quietly (avoid log spam during periodic get.data polls).
+    if (modbusLen == 0) {
+        return false;
+    }
+
+    if (modbusLen < 7 || modbus[1] != 0x03 || modbus[2] < 2) {
+        LOG_INFO("JXBS-3001-EC MODBUS task=%u invalid response len=%u", (unsigned)taskId, (unsigned)modbusLen);
+        return false;
+    }
+
+    uint16_t raw = ((uint16_t)modbus[3] << 8) | modbus[4];
+    uint32_t now = millis();
+
+    switch (taskId) {
+    case 0: // Pass-through immediate read, use the same mapping as task 1 for link validation.
+    case 1: { // JXBS-3001-EC WaterContent / IPSO 0x70, scale 0.1 %
+        float water = raw / 10.0f;
+        if (water >= 0.0f && water <= 100.0f) {
+            setScalar(env.high_precision_humidity, water, now);
+            LOG_INFO("JXBS-3001-EC WaterContent(task=%u): raw=%u, %.1f %%", (unsigned)taskId, (unsigned)raw, water);
+            return true;
+        }
+        break;
+    }
+    case 2: { // Temperature, scale 0.1 C
+        int16_t signedRaw = (int16_t)raw;
+        float temperature = signedRaw / 10.0f;
+        if (temperature >= -50.0f && temperature <= 130.0f) {
+            setScalar(env.temperature, temperature, now);
+            LOG_INFO("JXBS-3001-EC Temperature(task=2): raw=%d, %.1f C", (int)signedRaw, temperature);
+            return true;
+        }
+        break;
+    }
+    case 3: { // Salinity, scale 1 mg/L
+        setScalar(env.salinity, (float)raw, now);
+        LOG_INFO("JXBS-3001-EC Salinity(task=3): raw=%u, %.0f mg/L", (unsigned)raw, env.salinity.value);
+        return true;
+    }
+    case 4: { // Conductivity, scale 0.001 mS/cm.
+        float ec_ms = raw / 1000.0f;
+        setScalar(env.ec, ec_ms, now);
+        LOG_INFO("JXBS-3001-EC Conductivity(task=4): raw=%u, %.3f mS/cm", (unsigned)raw, ec_ms);
+        return true;
+    }
+    default:
+        LOG_INFO("JXBS-3001-EC MODBUS task=%u not mapped", (unsigned)taskId);
+        return false;
+    }
+
+    LOG_INFO("JXBS-3001-EC MODBUS task=%u raw=%u out of range", (unsigned)taskId, (unsigned)raw);
+    return false;
+}
+
 /**
  * 1-Wire protocol event callback: invoked by RakSNHub_Protocl_API.process() after parsing a frame.
  * Handles REQ/RSP, ADD_PID/ADD_SID, QSEND (actual UART TX), SDATA_REQ/REPORT (IPSO parse -> env), checksum/seq errors.
@@ -141,6 +339,15 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         break;
     case SNHUBAPI_EVT_RECV_RSP:
         LOG_INFO("+EVT:PID[%02x],RSP", pid);
+        if (last_sent_pid_valid && pid == last_sent_pid && pid != PID_MASTER && provision_list.count(pid) == 0) {
+            provision_list.insert(pid);
+            data_poll_pid = pid;
+            data_poll_pid_valid = true;
+            LOG_INFO("+ADD:PID:[%02x] from discovery response", pid);
+#if RAK_SENSORHUB_DOWNLINK_POC
+            scheduleDownlinkPoc(pid);
+#endif
+        }
         awaiting_rsp = false;
         advanceDataPollPid();
         break;
@@ -163,7 +370,32 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         provision_list.insert(msg[0]);
         data_poll_pid = msg[0];
         data_poll_pid_valid = true;
+#if RAK_SENSORHUB_DOWNLINK_POC
+        scheduleDownlinkPoc(msg[0]);
+#endif
         break;
+
+#if RAK_SENSORHUB_DOWNLINK_POC
+    case SNHUBAPI_EVT_IOC_RSP: {
+        RakSNHub_IOC_Rsp_t rsp;
+        if (RakSNHub_IOC_ParseRsp(msg, len, &rsp) == RET_OK) {
+            LOG_INFO("RAKSensorHub IOC RSP: func=%s(0x%02x) iface=0x%02x action=0x%02x data_len=%u", iocFuncName(rsp.funcode),
+                     rsp.funcode, rsp.iface, rsp.action, rsp.data_len);
+        } else {
+            LOG_INFO("RAKSensorHub IOC RSP: invalid len=%u", len);
+        }
+        break;
+    }
+
+    case SNHUBAPI_EVT_ATCMD_RSP: {
+        char rsp[96];
+        const uint16_t copy_len = (len < (sizeof(rsp) - 1)) ? len : (sizeof(rsp) - 1);
+        memcpy(rsp, msg, copy_len);
+        rsp[copy_len] = '\0';
+        LOG_INFO("RAKSensorHub ATCMD RSP: %s", rsp);
+        break;
+    }
+#endif
 
     case SNHUBAPI_EVT_GET_INTV:
         break;
@@ -180,6 +412,11 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         // }
         // LOG_INFO("");
         switch (msg[0]) {
+        case RAK_IPSO_MODBUS: {
+            if (parseDownlinkPocModbus(sid, msg, len))
+                rakSensorHub.setLastRead(millis());
+            break;
+        }
         case RAK_IPSO_TEMP_SENSOR: {  // Temperature (0x67), 0.1 °C
             if (len < 3)
                 break;
@@ -427,6 +664,11 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         // LOG_INFO("");
 
         switch (msg[0]) {
+        case RAK_IPSO_MODBUS: {
+            if (parseDownlinkPocModbus(sid, msg, len))
+                rakSensorHub.setLastRead(millis());
+            break;
+        }
         case RAK_IPSO_TEMP_SENSOR: {  // Temperature (0x67)
             if (len < 3)
                 break;
@@ -781,6 +1023,9 @@ static int32_t onewireRxHandle()
             if (pid != 0 && provision_list.count(pid) == 0) {
                 provision_list.insert(pid);
                 LOG_INFO("+BOOT:PID[%02x] from capability (len=%u) hot-plug", pid, (unsigned)payload_len);
+#if RAK_SENSORHUB_DOWNLINK_POC
+                scheduleDownlinkPoc(pid);
+#endif
             }
             // Quiet TX briefly after capability traffic to reduce chance of colliding with probe join/provision handshake.
             if (listen_window_until < now + 800) {
@@ -888,6 +1133,13 @@ static int32_t onewirePollHandle()
                  (unsigned long)(now - last_tx_time), (unsigned long)(now - last_rx_time),
                  (unsigned)provision_list.size());
     }
+
+#if RAK_SENSORHUB_DOWNLINK_POC
+    if (link_idle && downlink_poc_pending && (now - last_err_time) > 300) {
+        if (sendNextDownlinkPoc())
+            return 100;
+    }
+#endif
 
     // Discovery: when no PIDs, or periodically (hot-plug), try get.data(0x01..0x04) to trigger probe response
     static uint32_t last_discovery_time = 0;
@@ -1016,6 +1268,12 @@ bool RAKSensorHub::getMetrics(meshtastic_Telemetry *measurement)
         measurement->variant.environment_metrics.wind_direction = (uint16_t)(env.wind_direction.value <= 360 ? env.wind_direction.value : 0);   // Wind direction in degrees from RAK environmental sensor (IPSO 0xBF WIND_DIRECTION).
         any = true;
     }
+    if (scalarFresh(env.moisture, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_soil_moisture = true;
+        measurement->variant.environment_metrics.soil_moisture =
+            (uint8_t)(env.moisture.value < 0 ? 0 : (env.moisture.value > 100 ? 100 : (uint32_t)env.moisture.value));
+        any = true;
+    }
     if (scalarFresh(env.high_precision_humidity, now, maxAgeMs)) {
         // IPSO 0x70 is "high precision humidity" and is used by multiple sensors (soil / weather station).
         // Expose it in both fields so clients can display it without special-casing.
@@ -1028,8 +1286,10 @@ bool RAKSensorHub::getMetrics(meshtastic_Telemetry *measurement)
         }
 
         // Integer percent field (0..100)
-        measurement->variant.environment_metrics.has_soil_moisture = true;
-        measurement->variant.environment_metrics.soil_moisture = (uint8_t)(v < 0 ? 0 : (v > 100 ? 100 : (uint32_t)v));
+        if (!measurement->variant.environment_metrics.has_soil_moisture) {
+            measurement->variant.environment_metrics.has_soil_moisture = true;
+            measurement->variant.environment_metrics.soil_moisture = (uint8_t)(v < 0 ? 0 : (v > 100 ? 100 : (uint32_t)v));
+        }
         any = true;
     }
     if (scalarFresh(env.radiation, now, maxAgeMs)) {
