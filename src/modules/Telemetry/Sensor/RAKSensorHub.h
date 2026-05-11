@@ -37,6 +37,7 @@ struct EnvCache {
     ScalarReading temperature;            // 0x67 temperature °C
     ScalarReading humidity;              // 0x68 humidity %
     ScalarReading pressure;              // 0x73 pressure hPa
+    ScalarReading distance;              // EnvironmentMetrics.distance (mm), used for water level detection
     ScalarReading high_precision_humidity; // 0x70 high-precision humidity % (高精度湿度)
     ScalarReading moisture;               // local MODBUS mapping: soil/water content %
     ScalarReading high_precision_ec;     // 0x7F high-precision EC / conductivity (高精度EC)

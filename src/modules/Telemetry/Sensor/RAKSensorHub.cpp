@@ -81,6 +81,287 @@ static bool downlink_poc_pending = false;
 static bool downlink_poc_done = false;
 static uint8_t downlink_poc_pid = 0;
 static uint8_t downlink_poc_step = 0;
+// Two-phase POC:
+// - clear phase: stop runtime polling + clear defaults, then request probe restart
+// - config phase: apply template (IO_CFG + IO_ADDPOLLEX + IO_ENABLEPOLL)
+static uint8_t downlink_poc_phase = 0; // 0=clear+restart, 1=config
+static bool downlink_poc_wait_rejoin = false;
+static uint32_t downlink_poc_wait_since = 0;
+static uint8_t downlink_poc_wait_pid = 0;
+
+// Downlink template that mirrors WisToolBox JSON IO_ADDPOLL fields.
+// Goal: allow swapping sensor definitions without rewriting state machine code.
+typedef struct {
+    // 0: poll task (IO_ADDPOLLEX + IO_ENABLEPOLL), e.g. RS485 Modbus
+    // 1: AIC decode mapping (IO_DECODE), for 4-20mA
+    uint8_t taskKind;
+    uint8_t taskId;
+    uint32_t periodS;
+    uint32_t timeoutMs;
+    uint8_t retry;
+    uint8_t datatype;
+    float scale;
+    uint16_t ipso;
+    const char *profileName; // WisToolBox {PROFILE_NAME}, fixed 16 bytes on ProbeIO (e.g. "GE")
+    const uint8_t *cmd;
+    uint8_t cmdLen;
+    // For IO_DECODE (AIC): engineering range and offset (core-1.2.27 com_if_rak_bank_decode_page_t)
+    int32_t min;
+    int32_t max;
+    float offset;
+} DownlinkPollTask;
+
+typedef struct {
+    const char *sensorName;
+    uint8_t iface; // IOC_RS485, IOC_SDI12, ...
+    // Minimal subset used by current POC; can be extended to IO_PSM/SNSR_CONF later.
+    uint32_t baudrate;
+    uint8_t databit;
+    uint8_t stopbit;
+    uint8_t parity;
+    // Optional: IO_PSM (sent on IOC_CONTROL=9, funccode IO_PSM) for power management / warmup.
+    bool usePsm;
+    uint8_t psm_if_psm;
+    uint8_t psm_psw;
+    uint16_t psm_warmup_ms;
+    uint8_t psm_pmode;
+    uint8_t psm_method;
+    const DownlinkPollTask *tasks;
+    uint8_t taskCount;
+} DownlinkSensorTemplate;
+
+// JXBS-3001-EC template (aligned with WisToolBox JSON example).
+static const uint8_t JXBS3001_CMD1[] = {0x01, 0x03, 0x00, 0x12, 0x00, 0x01};
+static const uint8_t JXBS3001_CMD2[] = {0x01, 0x03, 0x00, 0x13, 0x00, 0x01};
+static const uint8_t JXBS3001_CMD3[] = {0x01, 0x03, 0x00, 0x14, 0x00, 0x01};
+static const uint8_t JXBS3001_CMD4[] = {0x01, 0x03, 0x00, 0x15, 0x00, 0x01};
+
+static const DownlinkPollTask JXBS3001_EC_TASKS[] = {
+    // TASK_ID1: ...0300120001:60:5000:2:6:0.1:112:{PROFILE_NAME}
+    {.taskId = 1,
+     .periodS = 60,
+     .timeoutMs = 5000,
+     .retry = 2,
+     .datatype = 6,
+     .scale = 0.1f,
+     .ipso = 112,
+     .profileName = "GE",
+     .cmd = JXBS3001_CMD1,
+     .cmdLen = sizeof(JXBS3001_CMD1)},
+    // TASK_ID2: ...0300130001:60:5000:2:4:0.1:103:{PROFILE_NAME}
+    {.taskId = 2,
+     .periodS = 60,
+     .timeoutMs = 5000,
+     .retry = 2,
+     .datatype = 4,
+     .scale = 0.1f,
+     .ipso = 103,
+     .profileName = "GE",
+     .cmd = JXBS3001_CMD2,
+     .cmdLen = sizeof(JXBS3001_CMD2)},
+    // TASK_ID3: ...0300140001:60:1000:2:6:1:19:{PROFILE_NAME}
+    {.taskId = 3,
+     .periodS = 60,
+     .timeoutMs = 1000,
+     .retry = 2,
+     .datatype = 6,
+     .scale = 1.0f,
+     .ipso = 19,
+     .profileName = "GE",
+     .cmd = JXBS3001_CMD3,
+     .cmdLen = sizeof(JXBS3001_CMD3)},
+    // TASK_ID4: ...0300150001:60:1000:2:6:0.001:192:{PROFILE_NAME}
+    {.taskId = 4,
+     .periodS = 60,
+     .timeoutMs = 1000,
+     .retry = 2,
+     .datatype = 6,
+     .scale = 0.001f,
+     .ipso = 192,
+     .profileName = "GE",
+     .cmd = JXBS3001_CMD4,
+     .cmdLen = sizeof(JXBS3001_CMD4)},
+};
+
+static const DownlinkSensorTemplate JXBS3001_EC_TEMPLATE = {
+    .sensorName = "JXBS-3001-EC",
+    .iface = IOC_RS485,
+    .baudrate = 9600,
+    .databit = 8,
+    .stopbit = 1,
+    .parity = 0,
+    .usePsm = false,
+    .psm_if_psm = 0,
+    .psm_psw = 0,
+    .psm_warmup_ms = 0,
+    .psm_pmode = 0,
+    .psm_method = 0,
+    .tasks = JXBS3001_EC_TASKS,
+    .taskCount = (uint8_t)(sizeof(JXBS3001_EC_TASKS) / sizeof(JXBS3001_EC_TASKS[0])),
+};
+
+// SDSIN (Shandong Saien) RS485 soil 4-in-1: moisture/temp/EC/pH.
+// Modbus holding regs (0-based): 0x0000 moisture(*10), 0x0001 temp(*10 signed), 0x0002 EC(uS/cm), 0x0003 pH(*10).
+// We map them into IPSO: 0x70 (moisture), 0x67 (temperature), 0xC0 (EC), 0xC2 (pH).
+static const uint8_t SDSIN4_CMD_MOIST[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x01};
+static const uint8_t SDSIN4_CMD_TEMP[] = {0x01, 0x03, 0x00, 0x01, 0x00, 0x01};
+static const uint8_t SDSIN4_CMD_EC[] = {0x01, 0x03, 0x00, 0x02, 0x00, 0x01};
+static const uint8_t SDSIN4_CMD_PH[] = {0x01, 0x03, 0x00, 0x03, 0x00, 0x01};
+
+static const DownlinkPollTask SDSIN_SOIL_4IN1_TASKS[] = {
+    // moisture % (x10)
+    {.taskId = 1,
+     .periodS = 60,
+     .timeoutMs = 5000,
+     .retry = 2,
+     .datatype = 6,
+     .scale = 0.1f,
+     .ipso = 112, // 0x70
+     .profileName = "GE",
+     .cmd = SDSIN4_CMD_MOIST,
+     .cmdLen = sizeof(SDSIN4_CMD_MOIST)},
+    // temperature C (x10, two's complement when <0)
+    {.taskId = 2,
+     .periodS = 60,
+     .timeoutMs = 5000,
+     .retry = 2,
+     .datatype = 4,
+     .scale = 0.1f,
+     .ipso = 103, // 0x67
+     .profileName = "GE",
+     .cmd = SDSIN4_CMD_TEMP,
+     .cmdLen = sizeof(SDSIN4_CMD_TEMP)},
+    // EC (uS/cm). Use scale=0.001 so Meshtastic side reports in mS/cm (consistent with existing EC logging).
+    {.taskId = 3,
+     .periodS = 60,
+     .timeoutMs = 5000,
+     .retry = 2,
+     .datatype = 6,
+     .scale = 0.001f,
+     .ipso = 192, // 0xC0
+     .profileName = "GE",
+     .cmd = SDSIN4_CMD_EC,
+     .cmdLen = sizeof(SDSIN4_CMD_EC)},
+    // pH (x10)
+    {.taskId = 4,
+     .periodS = 60,
+     .timeoutMs = 5000,
+     .retry = 2,
+     .datatype = 6,
+     .scale = 0.1f,
+     .ipso = 194, // 0xC2
+     .profileName = "GE",
+     .cmd = SDSIN4_CMD_PH,
+     .cmdLen = sizeof(SDSIN4_CMD_PH)},
+};
+
+static const DownlinkSensorTemplate SDSIN_SOIL_4IN1_TEMPLATE = {
+    .sensorName = "SDSIN-Soil-4in1",
+    .iface = IOC_RS485,
+    .baudrate = 4800,
+    .databit = 8,
+    .stopbit = 1,
+    .parity = 0,
+    .usePsm = false,
+    .psm_if_psm = 0,
+    .psm_psw = 0,
+    .psm_warmup_ms = 0,
+    .psm_pmode = 0,
+    .psm_method = 0,
+    .tasks = SDSIN_SOIL_4IN1_TASKS,
+    .taskCount = (uint8_t)(sizeof(SDSIN_SOIL_4IN1_TASKS) / sizeof(SDSIN_SOIL_4IN1_TASKS[0])),
+};
+
+// JXBS-4001-PH (RS485): template from WisToolBox JSON example.
+// Task1: {DEV_ADDR}0300020001:60:1000:2:6:0.01:193:{PROFILE_NAME}
+// IPSO=193 is 0xC1 (high-precision pH, 0.01 resolution).
+static const uint8_t JXBS4001PH_CMD1[] = {0x01, 0x03, 0x00, 0x02, 0x00, 0x01};
+
+static const DownlinkPollTask JXBS4001_PH_TASKS[] = {
+    {.taskId = 1,
+     .periodS = 60,
+     .timeoutMs = 1000,
+     .retry = 2,
+     .datatype = 6,
+     .scale = 0.01f,
+     .ipso = 193, // 0xC1
+     .profileName = "GE",
+     .cmd = JXBS4001PH_CMD1,
+     .cmdLen = sizeof(JXBS4001PH_CMD1)},
+};
+
+static const DownlinkSensorTemplate JXBS4001_PH_TEMPLATE = {
+    .sensorName = "JXBS-4001-PH",
+    .iface = IOC_RS485,
+    .baudrate = 9600,
+    .databit = 8,
+    .stopbit = 1,
+    .parity = 0,
+    .usePsm = false,
+    .psm_if_psm = 0,
+    .psm_psw = 0,
+    .psm_warmup_ms = 0,
+    .psm_pmode = 0,
+    .psm_method = 0,
+    .tasks = JXBS4001_PH_TASKS,
+    .taskCount = (uint8_t)(sizeof(JXBS4001_PH_TASKS) / sizeof(JXBS4001_PH_TASKS[0])),
+};
+
+// 4-20mA (AIC) template (core-1.2.27): uses IO_DECODE to map channel -> IPSO + min/max/offset + name.
+// AIC periodic uploads are handled by ProbeIO rule engine; no IO_ADDPOLLEX/IO_ENABLEPOLL is needed.
+static const DownlinkPollTask AIC_4_20MA_TASKS[] = {
+    {.taskKind = 1,
+     .taskId = 1, // AIC channel 1
+     // WisToolBox example uses IPSO=130 (0x82). Keep it literal to match JSON.
+     .ipso = 130,
+     .profileName = "ULB16_05",
+     .min = 0,
+     .max = 5, // JSON: max=5 min=0 (engineering range)
+     .offset = 0.0f},
+};
+
+static const DownlinkSensorTemplate AIC_4_20MA_TEMPLATE = {
+    .sensorName = "AIC-4-20mA",
+    .iface = IOC_AIC,
+    .baudrate = 0,
+    .databit = 0,
+    .stopbit = 0,
+    .parity = 0,
+    // WisToolBox JSON:
+    // atc+io_psm={PRB_ID}:9:1:10000:0:1  => if_psm=9 psw=1 warmup=10000 pmode=0 method=1
+    .usePsm = true,
+    .psm_if_psm = 9,
+    .psm_psw = 1,
+    .psm_warmup_ms = 10000,
+    .psm_pmode = 0,
+    .psm_method = 1,
+    .tasks = AIC_4_20MA_TASKS,
+    .taskCount = (uint8_t)(sizeof(AIC_4_20MA_TASKS) / sizeof(AIC_4_20MA_TASKS[0])),
+};
+
+#ifndef RAK_SENSORHUB_DOWNLINK_TEMPLATE
+// 1: JXBS-3001-EC (existing), 2: SDSIN soil 4-in-1 (moisture/temp/EC/pH), 3: JXBS-4001-PH (pH only), 4: AIC 4-20mA
+#define RAK_SENSORHUB_DOWNLINK_TEMPLATE 1
+#endif
+
+static const DownlinkSensorTemplate *getDownlinkTemplate()
+{
+    // Initial POC uses a single fixed template; future work: select by provisioning info or external config.
+    switch (RAK_SENSORHUB_DOWNLINK_TEMPLATE) {
+    case 0:
+        // Clear-only mode: template is unused (no IO_CFG/IO_ADDPOLLEX will be sent).
+        return &JXBS3001_EC_TEMPLATE;
+    case 2:
+        return &SDSIN_SOIL_4IN1_TEMPLATE;
+    case 3:
+        return &JXBS4001_PH_TEMPLATE;
+    case 4:
+        return &AIC_4_20MA_TEMPLATE;
+    case 1:
+    default:
+        return &JXBS3001_EC_TEMPLATE;
+    }
+}
 
 static const char *iocFuncName(uint8_t funcode)
 {
@@ -97,6 +378,8 @@ static const char *iocFuncName(uint8_t funcode)
         return "IO_POLLTASK";
     case IO_RMPDEF:
         return "IO_RMPDEF";
+    case IO_RMPOLL:
+        return "IO_RMPOLL";
     case IO_PSM:
         return "IO_PSM";
     case IO_CNT:
@@ -110,10 +393,19 @@ static const char *iocFuncName(uint8_t funcode)
 
 static void scheduleDownlinkPoc(uint8_t pid)
 {
-    if (pid == 0 || pid == PID_MASTER || downlink_poc_done || downlink_poc_pending)
+    if (pid == 0 || pid == PID_MASTER || downlink_poc_pending)
         return;
 
-    downlink_poc_pid = pid;
+    // If we were waiting for the probe to restart and rejoin, continue with config phase
+    // only when the same PID re-appears.
+    if (downlink_poc_wait_rejoin && pid == downlink_poc_wait_pid) {
+        downlink_poc_phase = 1;
+        downlink_poc_wait_rejoin = false;
+        downlink_poc_pid = pid;
+    } else {
+        downlink_poc_phase = 0;
+        downlink_poc_pid = pid;
+    }
     downlink_poc_step = 0;
     downlink_poc_pending = true;
     LOG_INFO("RAKSensorHub downlink POC scheduled: PID=0x%02x", pid);
@@ -122,44 +414,130 @@ static void scheduleDownlinkPoc(uint8_t pid)
 static bool sendNextDownlinkPoc()
 {
     rak_ioc_polltask_frame_t polltask;
+    const DownlinkSensorTemplate *tpl = getDownlinkTemplate();
+    const bool config_enabled = (RAK_SENSORHUB_DOWNLINK_TEMPLATE != 0);
 
     if (!downlink_poc_pending || downlink_poc_done)
         return false;
 
-    switch (downlink_poc_step) {
-    case 0:
-        // 清除RS485接口的默认配置（IPSO[00], IPSO[01], IPSO[02]等）
-        LOG_INFO("RAKSensorHub: IO_RMPDEF清除RS485默认配置");
-        RakSNHub_IOC_RmPollDef(downlink_poc_pid, IOC_RS485, 0);  // portid=0表示清除所有任务
-        break;
-    case 1:
-        LOG_INFO("RAKSensorHub JXBS-3001-EC IOC TX: IO_CFG RS485 9600:8:1:0");
-        RakSNHub_IOC_ConfigRS485(downlink_poc_pid, 9600, 8, 1, 0);
-        break;
-    case 2:
-        // Target ProbeIO core-1.2.27+: use IO_ADDPOLLEX so ProbeIO maps MODBUS -> "normal" IPSO (0x70/0x68/...)
-        // cmd is RAW binary bytes (not hex ASCII).
-        // Template example: "...:2:6:0.1:112:{PROFILE_NAME}" -> datatype=6, scale=0.1, IPSO=112(0x70)
-        {
-            static const uint8_t cmd[] = {0x01, 0x03, 0x00, 0x12, 0x00, 0x01};
-            LOG_INFO("RAKSensorHub JXBS-3001-EC IOC TX: IO_ADDPOLLEX task=1 cmd=01 03 00 12 00 01 period=60 timeout=5000 retry=2 scale=0.1 IPSO=112 datatype=6 name=GE");
-            RakSNHub_IOC_AddPollEx(downlink_poc_pid, IOC_RS485, 1, cmd, sizeof(cmd), 60, 5000, 2, 112, 0.1f, 6, "GE");
+    // Config phase layout:
+    // 0: IO_CFG
+    // 1..taskCount: IO_ADDPOLLEX per task
+    // next taskCount: IO_ENABLEPOLL per task
+    // final: IO_POLLTASK query
+    //
+    // Clear phase layout:
+    // 0: IO_RMPOLL task=0 (stop runtime polling immediately)
+    // 1: IO_RMPDEF portid=0 (clear defaults in flash)
+    // 2: stop; wait for manual power-cycle and rejoin, then config phase starts
+    if (downlink_poc_phase == 0) {
+        if (downlink_poc_step == 0) {
+            uint8_t taskid = 0;
+            LOG_INFO("RAKSensorHub %s IOC TX: IO_RMPOLL stop all tasks", tpl->sensorName);
+            RakSNHub_Protocl_API.ioc.send(downlink_poc_pid, IO_RMPOLL, tpl->iface, IOA_REQ, &taskid, sizeof(taskid));
+        } else if (downlink_poc_step == 1) {
+            LOG_INFO("RAKSensorHub %s IOC TX: IO_RMPDEF clear defaults", tpl->sensorName);
+            RakSNHub_IOC_RmPollDef(downlink_poc_pid, tpl->iface, 0); // portid=0表示清除所有任务
+        } else if (downlink_poc_step == 2) {
+            downlink_poc_pending = false;
+            if (!config_enabled) {
+                downlink_poc_done = true;
+                LOG_INFO("RAKSensorHub downlink POC clear-only done (RAK_SENSORHUB_DOWNLINK_TEMPLATE=0): PID=0x%02x",
+                         downlink_poc_pid);
+                return false;
+            }
+            downlink_poc_wait_rejoin = true;
+            downlink_poc_wait_pid = downlink_poc_pid;
+            downlink_poc_wait_since = millis();
+            LOG_INFO("RAKSensorHub downlink POC cleared; power-cycle ProbeIO then wait for rejoin: PID=0x%02x", downlink_poc_pid);
+            return false;
+        } else {
+            // Should not reach
+            downlink_poc_pending = false;
+            downlink_poc_done = true;
+            return false;
         }
-        break;
-    case 3:
-        LOG_INFO("RAKSensorHub JXBS-3001-EC IOC TX: IO_ENABLEPOLL task=1 enable=1");
-        RakSNHub_IOC_EnablePoll(downlink_poc_pid, IOC_RS485, 1, 1);
-        break;
-    case 4:
-        LOG_INFO("RAKSensorHub JXBS-3001-EC IOC TX: IO_POLLTASK query task=0");
-        polltask.taskid = 0;
-        RakSNHub_Protocl_API.ioc.send(downlink_poc_pid, IO_POLLTASK, IOC_RS485, IOA_RSP, (const uint8_t *)&polltask, sizeof(polltask));
-        break;
-    default:
-        downlink_poc_pending = false;
-        downlink_poc_done = true;
-        LOG_INFO("RAKSensorHub JXBS-3001-EC minimal downlink POC queued all IOC commands");
-        return false;
+    } else if (downlink_poc_step == 0) {
+        LOG_INFO("RAKSensorHub %s IOC TX: IO_CFG %s %lu:%u:%u:%u", tpl->sensorName,
+                 (tpl->iface == IOC_RS485) ? "RS485" : "IF", (unsigned long)tpl->baudrate, (unsigned)tpl->databit,
+                 (unsigned)tpl->stopbit, (unsigned)tpl->parity);
+        if (tpl->iface == IOC_RS485) {
+            RakSNHub_IOC_ConfigRS485(downlink_poc_pid, tpl->baudrate, tpl->databit, tpl->stopbit, tpl->parity);
+        } else if (tpl->iface == IOC_AIC) {
+            // AIC (4-20mA) uses IO_DECODE per channel; WisToolBox templates also send IO_PSM (IOC_CONTROL) first.
+            if (tpl->usePsm) {
+                struct __attribute__((packed)) ThisPsmFrame {
+                    uint8_t if_psm;
+                    uint8_t psw;
+                    uint16_t warmuptime;
+                    uint8_t pmode;
+                    uint8_t method;
+                } psm = {
+                    .if_psm = tpl->psm_if_psm,
+                    .psw = tpl->psm_psw,
+                    .warmuptime = tpl->psm_warmup_ms,
+                    .pmode = tpl->psm_pmode,
+                    .method = tpl->psm_method,
+                };
+                LOG_INFO("RAKSensorHub %s IOC TX: IO_PSM if_psm=%u psw=%u warmup=%u pmode=%u method=%u",
+                         tpl->sensorName, (unsigned)psm.if_psm, (unsigned)psm.psw, (unsigned)psm.warmuptime,
+                         (unsigned)psm.pmode, (unsigned)psm.method);
+                RakSNHub_Protocl_API.ioc.send(downlink_poc_pid, IO_PSM, IOC_CONTROL, IOA_REQ, (const uint8_t *)&psm,
+                                              sizeof(psm));
+            }
+        }
+    } else {
+        if (tpl->iface == IOC_AIC) {
+            // AIC config layout:
+            // 1..taskCount: IO_DECODE per channel
+            const uint8_t decodeStart = 1;
+            const uint8_t doneStep = (uint8_t)(decodeStart + tpl->taskCount);
+            if (downlink_poc_step >= decodeStart && downlink_poc_step < doneStep) {
+                const uint8_t idx = (uint8_t)(downlink_poc_step - decodeStart);
+                const DownlinkPollTask &t = tpl->tasks[idx];
+                LOG_INFO("RAKSensorHub %s IOC TX: IO_DECODE(AIC) ch=%u IPSO=%u min=%ld max=%ld offset=%g name=%s",
+                         tpl->sensorName, (unsigned)t.taskId, (unsigned)t.ipso, (long)t.min, (long)t.max, (double)t.offset,
+                         (t.profileName != NULL) ? t.profileName : "");
+                RakSNHub_IOC_DecodeAIC(downlink_poc_pid, t.taskId, (uint8_t)t.ipso, t.min, t.max, t.offset, t.profileName);
+            } else {
+                downlink_poc_pending = false;
+                downlink_poc_done = true;
+                LOG_INFO("RAKSensorHub %s downlink POC queued all IOC commands", tpl->sensorName);
+                return false;
+            }
+        } else {
+            const uint8_t addStart = 1;
+            const uint8_t enableStart = (uint8_t)(addStart + tpl->taskCount);
+            const uint8_t pollTaskStep = (uint8_t)(enableStart + tpl->taskCount);
+
+            if (downlink_poc_step >= addStart && downlink_poc_step < enableStart) {
+                const uint8_t idx = (uint8_t)(downlink_poc_step - addStart);
+                const DownlinkPollTask &t = tpl->tasks[idx];
+                LOG_INFO(
+                    "RAKSensorHub %s IOC TX: IO_ADDPOLLEX task=%u cmdlen=%u period=%lu timeout=%lu retry=%u scale=%g "
+                    "IPSO=%u datatype=%u name=%s",
+                    tpl->sensorName, (unsigned)t.taskId, (unsigned)t.cmdLen, (unsigned long)t.periodS,
+                    (unsigned long)t.timeoutMs, (unsigned)t.retry, (double)t.scale, (unsigned)t.ipso, (unsigned)t.datatype,
+                    (t.profileName != NULL) ? t.profileName : "");
+                RakSNHub_IOC_AddPollEx(downlink_poc_pid, tpl->iface, t.taskId, t.cmd, t.cmdLen, t.periodS, t.timeoutMs, t.retry,
+                                       (uint8_t)t.ipso, t.scale, t.datatype, t.profileName);
+            } else if (downlink_poc_step >= enableStart && downlink_poc_step < pollTaskStep) {
+                const uint8_t idx = (uint8_t)(downlink_poc_step - enableStart);
+                const DownlinkPollTask &t = tpl->tasks[idx];
+                LOG_INFO("RAKSensorHub %s IOC TX: IO_ENABLEPOLL task=%u enable=1", tpl->sensorName, (unsigned)t.taskId);
+                RakSNHub_IOC_EnablePoll(downlink_poc_pid, tpl->iface, t.taskId, 1);
+            } else if (downlink_poc_step == pollTaskStep) {
+                LOG_INFO("RAKSensorHub %s IOC TX: IO_POLLTASK query task=0", tpl->sensorName);
+                polltask.taskid = 0;
+                RakSNHub_Protocl_API.ioc.send(downlink_poc_pid, IO_POLLTASK, tpl->iface, IOA_RSP, (const uint8_t *)&polltask,
+                                              sizeof(polltask));
+            } else {
+                downlink_poc_pending = false;
+                downlink_poc_done = true;
+                LOG_INFO("RAKSensorHub %s downlink POC queued all IOC commands", tpl->sensorName);
+                return false;
+            }
+        }
     }
 
     downlink_poc_step++;
@@ -386,15 +764,6 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         }
         break;
     }
-
-    case SNHUBAPI_EVT_ATCMD_RSP: {
-        char rsp[96];
-        const uint16_t copy_len = (len < (sizeof(rsp) - 1)) ? len : (sizeof(rsp) - 1);
-        memcpy(rsp, msg, copy_len);
-        rsp[copy_len] = '\0';
-        LOG_INFO("RAKSensorHub ATCMD RSP: %s", rsp);
-        break;
-    }
 #endif
 
     case SNHUBAPI_EVT_GET_INTV:
@@ -406,15 +775,40 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
 
     case SNHUBAPI_EVT_SDATA_REQ:  // IPSO parse from sensor data request response
         LOG_INFO("+EVT:PID[%02x],IPSO[%02x]", pid, msg[0]);
-        // for( uint16_t i=1; i<len; i++)
-        // {
-        //     LOG_INFO("%02x,", msg[i]);  
-        // }
-        // LOG_INFO("");
+        if (msg[0] == 0x82 || msg[0] == RAK_IPSO_ANALOG_INPUT) {
+            char hex[160] = {0};
+            size_t o = 0;
+            for (uint16_t i = 0; i < len && o + 3 < sizeof(hex); i++) {
+                o += (size_t)snprintf(&hex[o], sizeof(hex) - o, "%02X ", (unsigned)msg[i]);
+            }
+            LOG_INFO("IPSO[%02x] raw(len=%u): %s", (unsigned)msg[0], (unsigned)len, hex);
+        }
         switch (msg[0]) {
         case RAK_IPSO_MODBUS: {
             if (parseDownlinkPocModbus(sid, msg, len))
                 rakSensorHub.setLastRead(millis());
+            break;
+        }
+        case 0x82: { // Custom IPSO used by some AIC templates (e.g. WisToolBox: io_decode ... IPSO=130)
+            const uint32_t now = millis();
+            if (len >= 5) {
+                uint32_t raw = (uint32_t)msg[1] | ((uint32_t)msg[2] << 8) | ((uint32_t)msg[3] << 16) | ((uint32_t)msg[4] << 24);
+                LOG_INFO("AIC IPSO[0x82] raw32=%lu (0x%08lx)", (unsigned long)raw, (unsigned long)raw);
+                // Empirically (core-1.2.27 AIC + IPSO mult), 0x82 is often "mm" for water level / distance.
+                // Meshtastic EnvironmentMetrics has a dedicated 'distance' field in mm.
+                setScalar(env.distance, (float)raw, now);
+            } else if (len >= 3) {
+                uint16_t raw16 = ((uint16_t)msg[2] << 8) | msg[1];
+                LOG_INFO("AIC IPSO[0x82] raw16=%u (0x%04x)", (unsigned)raw16, (unsigned)raw16);
+                setScalar(env.distance, (float)raw16, now);
+            }
+            break;
+        }
+        case RAK_IPSO_ANALOG_INPUT: { // 0x02 standard analog input (2 bytes, little-endian)
+            if (len < 3)
+                break;
+            uint16_t raw16 = ((uint16_t)msg[2] << 8) | msg[1];
+            LOG_INFO("Analog input IPSO[0x02] raw=%u", (unsigned)raw16);
             break;
         }
         case RAK_IPSO_TEMP_SENSOR: {  // Temperature (0x67), 0.1 °C
@@ -657,16 +1051,39 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         break;
     case SNHUBAPI_EVT_REPORT:  // Unsolicited report IPSO parse (same logic as SDATA_REQ)
         LOG_INFO("+EVT:PID[%02x],IPSO[%02x]", pid, msg[0]);
-        // for( uint16_t i=1; i<len; i++)
-        // {
-        //     LOG_INFO("%02x,", msg[i]);
-        // }
-        // LOG_INFO("");
+        if (msg[0] == 0x82 || msg[0] == RAK_IPSO_ANALOG_INPUT) {
+            char hex[160] = {0};
+            size_t o = 0;
+            for (uint16_t i = 0; i < len && o + 3 < sizeof(hex); i++) {
+                o += (size_t)snprintf(&hex[o], sizeof(hex) - o, "%02X ", (unsigned)msg[i]);
+            }
+            LOG_INFO("REPORT IPSO[%02x] raw(len=%u): %s", (unsigned)msg[0], (unsigned)len, hex);
+        }
 
         switch (msg[0]) {
         case RAK_IPSO_MODBUS: {
             if (parseDownlinkPocModbus(sid, msg, len))
                 rakSensorHub.setLastRead(millis());
+            break;
+        }
+        case 0x82: { // Custom IPSO used by some AIC templates (e.g. WisToolBox: io_decode ... IPSO=130)
+            const uint32_t now = millis();
+            if (len >= 5) {
+                uint32_t raw = (uint32_t)msg[1] | ((uint32_t)msg[2] << 8) | ((uint32_t)msg[3] << 16) | ((uint32_t)msg[4] << 24);
+                LOG_INFO("AIC REPORT IPSO[0x82] raw32=%lu (0x%08lx)", (unsigned long)raw, (unsigned long)raw);
+                setScalar(env.distance, (float)raw, now);
+            } else if (len >= 3) {
+                uint16_t raw16 = ((uint16_t)msg[2] << 8) | msg[1];
+                LOG_INFO("AIC REPORT IPSO[0x82] raw16=%u (0x%04x)", (unsigned)raw16, (unsigned)raw16);
+                setScalar(env.distance, (float)raw16, now);
+            }
+            break;
+        }
+        case RAK_IPSO_ANALOG_INPUT: { // 0x02 standard analog input (2 bytes, little-endian)
+            if (len < 3)
+                break;
+            uint16_t raw16 = ((uint16_t)msg[2] << 8) | msg[1];
+            LOG_INFO("Analog input REPORT IPSO[0x02] raw=%u", (unsigned)raw16);
             break;
         }
         case RAK_IPSO_TEMP_SENSOR: {  // Temperature (0x67)
@@ -1256,6 +1673,11 @@ bool RAKSensorHub::getMetrics(meshtastic_Telemetry *measurement)
     if (scalarFresh(env.pressure, now, maxAgeMs)) {
         measurement->variant.environment_metrics.has_barometric_pressure = true;
         measurement->variant.environment_metrics.barometric_pressure = env.pressure.value;   // Pressure in hPa from RAK environmental sensor (IPSO 0x73 BAROMETRIC_PRESSURE).
+        any = true;
+    }
+    if (scalarFresh(env.distance, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_distance = true;
+        measurement->variant.environment_metrics.distance = env.distance.value; // Distance in mm (used for water level detection).
         any = true;
     }
     if (scalarFresh(env.wind_speed, now, maxAgeMs)) {
