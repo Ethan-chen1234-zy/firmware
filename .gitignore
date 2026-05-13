@@ -35,6 +35,9 @@ __pycache__
 venv/
 .venv/
 release/
+# RAKSensorHub: UF2/zips under releases/ — attach via GitHub Release; README-RELEASE.md may be committed
+releases/**/*.uf2
+releases/**/*.zip
 .vscode/extensions.json
 /compile_commands.json
 src/mesh/raspihttp/certificate.pem

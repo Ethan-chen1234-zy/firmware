@@ -7,11 +7,19 @@
 
 ---
 
+## 〇、发行物与 tag（非「新提交」，仅追溯二进制）
+
+| Tag | Commit | 说明 |
+|-----|--------|------|
+| `v2.7.21-raksensorhub-poc-uplink` | `bc893370c` | **上行 POC**：`rak2560` 构建产物与 SHA256 见 `releases/uplink-poc/v2.7.21-raksensorhub-poc-uplink/README-RELEASE.md`；发布流程见 `doc/RAKSensorHub_Release_Uplink_POC.md`。UF2 通过 **GitHub Release 附件**分发（`releases/**/*.uf2` 已 `.gitignore`）。 |
+
+---
+
 ## 一、本分支功能演进（新 → 旧）
 
 | 提交 | 日期 | 说明 |
 |------|------|------|
-| `（本批提交后执行 git rev-parse --short HEAD 填入）` | 2026-05-13 | USB CDC `RAKHUB …` 运行时配置 POC（`RAK_SENSORHUB_USB_PROFILE`）；RS485 多任务 `slot=`；`bin/rakhub_usb_poc.py`；`RAKSensorHubProfile.h` / `xmodem.cpp` 钩子；根目录 `README(Add_RAKSensorHub).md` 入口与下行 POC / 架构 / 上行列表等文档同步。 |
+| `d79f2d62a` | 2026-05-13 | USB CDC `RAKHUB …` 运行时配置 POC（`RAK_SENSORHUB_USB_PROFILE`）；RS485 多任务 `slot=`；`bin/rakhub_usb_poc.py`；`RAKSensorHubProfile.h` / `xmodem.cpp` 钩子；根目录 `README(Add_RAKSensorHub).md` 入口与下行 POC / 架构 / 上行列表等文档同步。 |
 | `ecac05a5e` | 2026-05-12 | 补充文档（Add docs …） |
 | `9cf699d45` | 2026-05-12 | `platformio.ini`：库路径与版本说明澄清 |
 | `e94e21094` | 2026-05-11 | 合并上游 `meshtastic/develop` 至本特性分支 |

@@ -16,6 +16,8 @@
 | Uplink IPSO ↔ sensors | `doc/RAKSensorHub_Uplink_Sensor_Support_List.en.md` |
 | CLI vs USB POC | `doc/RAKSensorHub&Meshtastic Python CLI 方案分析.md` |
 | **Commit-level changelog** | **`doc/RAKSensorHub_CHANGELOG.md`** ← append rows here after each meaningful merge |
+| **上行 POC 固件发布流程**（`git worktree`、不破坏本地修改、GitHub Release） | **`doc/RAKSensorHub_Release_Uplink_POC.md`** |
+| **已构建上行 POC 的校验说明**（tag / commit / SHA256） | **`releases/uplink-poc/v2.7.21-raksensorhub-poc-uplink/README-RELEASE.md`** |
 
 ---
 
