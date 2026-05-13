@@ -50,6 +50,9 @@
 
 #include "xmodem.h"
 #include "SPILock.h"
+#if defined(HAS_RAKHUB) && defined(RAK_SENSORHUB_USB_PROFILE) && RAK_SENSORHUB_USB_PROFILE
+#include "modules/Telemetry/Sensor/RAKSensorHubProfile.h"
+#endif
 
 #ifdef FSCom
 
@@ -192,6 +195,9 @@ void XModemAdapter::handlePacket(meshtastic_XModem xmodemPacket)
         file.flush();
         file.close();
         spiLock->unlock();
+#if defined(HAS_RAKHUB) && defined(RAK_SENSORHUB_USB_PROFILE) && RAK_SENSORHUB_USB_PROFILE
+        rakhubNotifyProfileFileUploaded(filename);
+#endif
         isReceiving = false;
         break;
     case meshtastic_XModem_Control_CAN:

@@ -12,6 +12,9 @@
 
 #include <cstring>
 #include <set>
+#if RAK_SENSORHUB_USB_PROFILE
+#include <cstdlib>
+#endif
 
 using namespace concurrency;
 
@@ -19,6 +22,9 @@ using namespace concurrency;
 
 #ifndef RAK_SENSORHUB_DOWNLINK_POC
 #define RAK_SENSORHUB_DOWNLINK_POC 0
+#endif
+#ifndef RAK_SENSORHUB_USB_PROFILE
+#define RAK_SENSORHUB_USB_PROFILE 0
 #endif
 
 /** Construct RAK 1-Wire sensor hub (type SENSOR_UNSET, name "RAKSensorHub"); actual init in runOnce(). */
@@ -339,6 +345,76 @@ static const DownlinkSensorTemplate AIC_4_20MA_TEMPLATE = {
     .taskCount = (uint8_t)(sizeof(AIC_4_20MA_TASKS) / sizeof(AIC_4_20MA_TASKS[0])),
 };
 
+#if RAK_SENSORHUB_DOWNLINK_POC && RAK_SENSORHUB_USB_PROFILE
+
+// -----------------------------------------------------------------------------
+// USB CDC text POC — replace compile-time profile without reflashing (same USB as LOG).
+// IMPORTANT: Disconnect Meshtastic App / protobuf clients while sending lines (raw newline text).
+// -----------------------------------------------------------------------------
+
+static char rakhub_usb_line[280];
+static size_t rakhub_usb_line_len = 0;
+
+static bool rakhub_usb_override = false;       // When true, USB selection replaces RAK_SENSORHUB_DOWNLINK_TEMPLATE
+static bool rakhub_usb_custom_active = false;  // Mutable RS485/AIC profile in rakhub_usb_*
+static uint8_t rakhub_usb_builtin_id = 1;      // Used when override && !custom (0..4 same as macros)
+
+static DownlinkPollTask rakhub_usb_custom_tasks[4];
+static DownlinkSensorTemplate rakhub_usb_custom_tpl;
+static uint8_t rakhub_usb_cmd[4][64];
+static char rakhub_usb_name[4][17];
+static char rakhub_usb_sensor_name[32] = "USB-profile";
+
+static int rakhubHexNibble(char c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+static bool rakhubParseHexCmd(const char *hex, uint8_t *out, size_t cap, uint8_t *olen)
+{
+    const size_t hlen = strlen(hex);
+    if (hlen < 2 || (hlen % 2u) != 0 || (hlen / 2u) > cap)
+        return false;
+    const size_t n = hlen / 2u;
+    for (size_t i = 0; i < n; i++) {
+        int hi = rakhubHexNibble(hex[i * 2]);
+        int lo = rakhubHexNibble(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0)
+            return false;
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    *olen = (uint8_t)n;
+    return true;
+}
+
+static void rakhubUsbTriggerDownlink(uint8_t pid)
+{
+    uint8_t p = pid;
+    if (p == 0) {
+        if (data_poll_pid_valid && provision_list.count(data_poll_pid))
+            p = data_poll_pid;
+        else if (provision_list.count(0x01))
+            p = 0x01;
+        else
+            p = 0x01;
+    }
+    downlink_poc_done = false;
+    downlink_poc_phase = 0;
+    downlink_poc_step = 0;
+    downlink_poc_wait_rejoin = false;
+    downlink_poc_pending = true;
+    downlink_poc_pid = p;
+    LOG_INFO("RAKSensorHub USB: downlink re-armed PID=0x%02x", p);
+}
+
+#endif // RAK_SENSORHUB_DOWNLINK_POC && RAK_SENSORHUB_USB_PROFILE
+
 #ifndef RAK_SENSORHUB_DOWNLINK_TEMPLATE
 // 1: JXBS-3001-EC (existing), 2: SDSIN soil 4-in-1 (moisture/temp/EC/pH), 3: JXBS-4001-PH (pH only), 4: AIC 4-20mA
 #define RAK_SENSORHUB_DOWNLINK_TEMPLATE 1
@@ -346,6 +422,26 @@ static const DownlinkSensorTemplate AIC_4_20MA_TEMPLATE = {
 
 static const DownlinkSensorTemplate *getDownlinkTemplate()
 {
+#if RAK_SENSORHUB_DOWNLINK_POC && RAK_SENSORHUB_USB_PROFILE
+    if (rakhub_usb_custom_active)
+        return &rakhub_usb_custom_tpl;
+    if (rakhub_usb_override) {
+        switch (rakhub_usb_builtin_id) {
+        case 0:
+            // Clear-only: iface fields still needed for IOC_RMPOLL/RMPDEF; RS485 placeholder.
+            return &JXBS3001_EC_TEMPLATE;
+        case 2:
+            return &SDSIN_SOIL_4IN1_TEMPLATE;
+        case 3:
+            return &JXBS4001_PH_TEMPLATE;
+        case 4:
+            return &AIC_4_20MA_TEMPLATE;
+        case 1:
+        default:
+            return &JXBS3001_EC_TEMPLATE;
+        }
+    }
+#endif
     // Initial POC uses a single fixed template; future work: select by provisioning info or external config.
     switch (RAK_SENSORHUB_DOWNLINK_TEMPLATE) {
     case 0:
@@ -415,7 +511,12 @@ static bool sendNextDownlinkPoc()
 {
     rak_ioc_polltask_frame_t polltask;
     const DownlinkSensorTemplate *tpl = getDownlinkTemplate();
+#if RAK_SENSORHUB_USB_PROFILE
+    const bool config_enabled = rakhub_usb_override ? (rakhub_usb_custom_active || (rakhub_usb_builtin_id != 0))
+                                                     : (RAK_SENSORHUB_DOWNLINK_TEMPLATE != 0);
+#else
     const bool config_enabled = (RAK_SENSORHUB_DOWNLINK_TEMPLATE != 0);
+#endif
 
     if (!downlink_poc_pending || downlink_poc_done)
         return false;
@@ -1496,6 +1597,324 @@ static int32_t onewireRxHandle()
     return (int32_t)idle_ms;
 }
 
+#if RAK_SENSORHUB_DOWNLINK_POC && RAK_SENSORHUB_USB_PROFILE
+
+static void rakhubUsbHandleLine(char *line)
+{
+    while (*line == ' ' || *line == '\t')
+        line++;
+
+    char *cr = strchr(line, '\r');
+    if (cr)
+        *cr = '\0';
+
+    if (strncmp(line, "RAKHUB", 6) != 0)
+        return;
+
+    char *cursor = line + 6;
+    while (*cursor == ' ' || *cursor == '\t')
+        cursor++;
+
+    char *cmd = cursor;
+    char *rest = strchr(cursor, ' ');
+    if (rest) {
+        *rest++ = '\0';
+        while (*rest == ' ' || *rest == '\t')
+            rest++;
+    } else {
+        rest = strchr(cmd, '\0');
+    }
+
+    if (strcmp(cmd, "HELP") == 0 || strcmp(cmd, "?") == 0) {
+        LOG_INFO(
+            "RAKHUB HELP: Disconnect protobuf app first. LF-terminated lines:\nCOMPILE — use flash macro\tBUILTIN "
+            "<0-4> — built-in preset\nRS485 baud=9600 databit=8 stop=1 parity=0 task=1 hex=010300120001 "
+            "period=60 timeout=5000 retry=2 scale=0.1 ipso=112 dtype=6 name=GE [slot=0..3 psm=0]"
+            "\nAIC ch=1 ipso=130 min=0 max=5 off=0 name=XXX [psm=1 if_psm=9 psw=1 warmup=10000 pmode=0 method=1]\nAPPLY [pid_hex] "
+            "— ARM downlink POC\nSTATUS");
+        return;
+    }
+
+    if (strcmp(cmd, "STATUS") == 0) {
+        LOG_INFO("RAKHUB STATUS: usb_override=%d custom=%d builtin_id=%u compile_tpl=%d pending_poc=%d done=%d phase=%u",
+                 (int)rakhub_usb_override, (int)rakhub_usb_custom_active, (unsigned)rakhub_usb_builtin_id,
+                 RAK_SENSORHUB_DOWNLINK_TEMPLATE, (int)downlink_poc_pending, (int)downlink_poc_done,
+                 (unsigned)downlink_poc_phase);
+        return;
+    }
+
+    if (strcmp(cmd, "COMPILE") == 0) {
+        rakhub_usb_override = false;
+        rakhub_usb_custom_active = false;
+        LOG_INFO("RAKHUB: using compile-time RAK_SENSORHUB_DOWNLINK_TEMPLATE=%d", RAK_SENSORHUB_DOWNLINK_TEMPLATE);
+        return;
+    }
+
+    if (strcmp(cmd, "BUILTIN") == 0) {
+        unsigned long n = strtoul(rest, nullptr, 10);
+        if (n > 4) {
+            LOG_INFO("RAKHUB BUILTIN: id must be 0..4");
+            return;
+        }
+        rakhub_usb_override = true;
+        rakhub_usb_custom_active = false;
+        rakhub_usb_builtin_id = (uint8_t)n;
+        LOG_INFO("RAKHUB BUILTIN=%u stored (clear-only if 0). Send RAKHUB APPLY.", (unsigned)rakhub_usb_builtin_id);
+        return;
+    }
+
+    if (strcmp(cmd, "APPLY") == 0) {
+        uint8_t pid = 0;
+        if (*rest)
+            pid = (uint8_t)strtoul(rest, nullptr, 16);
+        rakhubUsbTriggerDownlink(pid);
+        return;
+    }
+
+    if (strcmp(cmd, "RS485") == 0) {
+        uint32_t baud = 9600;
+        uint8_t databit = 8, stopbit = 1, parity = 0;
+        uint8_t slot = 0;
+        bool has_slot = false;
+        uint8_t taskid = 1;
+        uint32_t periodS = 60, timeoutMs = 5000;
+        uint8_t retry = 2;
+        uint8_t datatype = 6;
+        float scale = 0.1f;
+        uint16_t ipso = 112;
+        char hexbuf[128] = {0};
+        char namebuf[17] = {0};
+        strncpy(namebuf, "GE", sizeof(namebuf) - 1);
+        bool has_hex = false;
+        bool usePsm = false;
+        uint8_t psm_if = 0, psm_psw = 0, psm_pmode = 0, psm_method = 0;
+        uint16_t psm_warmup = 0;
+
+        char kvbuf[232];
+        strncpy(kvbuf, rest, sizeof(kvbuf) - 1);
+        kvbuf[sizeof(kvbuf) - 1] = '\0';
+
+        for (char *tok = strtok(kvbuf, " \t"); tok != nullptr; tok = strtok(nullptr, " \t")) {
+            char *eq = strchr(tok, '=');
+            if (!eq)
+                continue;
+            *eq++ = '\0';
+            if (strcmp(tok, "baud") == 0)
+                baud = (uint32_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "databit") == 0)
+                databit = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "stop") == 0)
+                stopbit = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "parity") == 0)
+                parity = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "slot") == 0) {
+                slot = (uint8_t)strtoul(eq, nullptr, 10);
+                has_slot = true;
+            } else if (strcmp(tok, "task") == 0)
+                taskid = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "hex") == 0) {
+                strncpy(hexbuf, eq, sizeof(hexbuf) - 1);
+                has_hex = true;
+            } else if (strcmp(tok, "period") == 0)
+                periodS = (uint32_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "timeout") == 0)
+                timeoutMs = (uint32_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "retry") == 0)
+                retry = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "scale") == 0)
+                scale = strtof(eq, nullptr);
+            else if (strcmp(tok, "ipso") == 0)
+                ipso = (uint16_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "dtype") == 0)
+                datatype = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "name") == 0) {
+                strncpy(namebuf, eq, sizeof(namebuf) - 1);
+                namebuf[sizeof(namebuf) - 1] = '\0';
+            } else if (strcmp(tok, "psm") == 0)
+                usePsm = strtoul(eq, nullptr, 10) != 0;
+            else if (strcmp(tok, "if_psm") == 0)
+                psm_if = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "psw") == 0)
+                psm_psw = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "warmup") == 0)
+                psm_warmup = (uint16_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "pmode") == 0)
+                psm_pmode = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "method") == 0)
+                psm_method = (uint8_t)strtoul(eq, nullptr, 10);
+        }
+
+        if (!has_hex || strlen(hexbuf) < 2) {
+            LOG_INFO("RAKHUB RS485: missing hex=");
+            return;
+        }
+        if (slot >= (sizeof(rakhub_usb_custom_tasks) / sizeof(rakhub_usb_custom_tasks[0]))) {
+            LOG_INFO("RAKHUB RS485: slot must be 0..3");
+            return;
+        }
+        uint8_t cmdlen = 0;
+        memset(rakhub_usb_cmd[slot], 0, sizeof(rakhub_usb_cmd[slot]));
+        if (!rakhubParseHexCmd(hexbuf, rakhub_usb_cmd[slot], sizeof(rakhub_usb_cmd[slot]), &cmdlen)) {
+            LOG_INFO("RAKHUB RS485: invalid hex string");
+            return;
+        }
+
+        if (!has_slot || slot == 0) {
+            memset(rakhub_usb_custom_tasks, 0, sizeof(rakhub_usb_custom_tasks));
+            memset(rakhub_usb_name, 0, sizeof(rakhub_usb_name));
+        }
+
+        memset(rakhub_usb_name[slot], 0, sizeof(rakhub_usb_name[slot]));
+        strncpy(rakhub_usb_name[slot], namebuf, 16);
+
+        memset(&rakhub_usb_custom_tasks[slot], 0, sizeof(rakhub_usb_custom_tasks[slot]));
+        rakhub_usb_custom_tasks[slot].taskKind = 0;
+        rakhub_usb_custom_tasks[slot].taskId = taskid;
+        rakhub_usb_custom_tasks[slot].periodS = periodS;
+        rakhub_usb_custom_tasks[slot].timeoutMs = timeoutMs;
+        rakhub_usb_custom_tasks[slot].retry = retry;
+        rakhub_usb_custom_tasks[slot].datatype = datatype;
+        rakhub_usb_custom_tasks[slot].scale = scale;
+        rakhub_usb_custom_tasks[slot].ipso = ipso;
+        rakhub_usb_custom_tasks[slot].profileName = rakhub_usb_name[slot];
+        rakhub_usb_custom_tasks[slot].cmd = rakhub_usb_cmd[slot];
+        rakhub_usb_custom_tasks[slot].cmdLen = cmdlen;
+
+        strncpy(rakhub_usb_sensor_name, "USB-RS485", sizeof(rakhub_usb_sensor_name) - 1);
+        rakhub_usb_sensor_name[sizeof(rakhub_usb_sensor_name) - 1] = '\0';
+        memset(&rakhub_usb_custom_tpl, 0, sizeof(rakhub_usb_custom_tpl));
+        rakhub_usb_custom_tpl.sensorName = rakhub_usb_sensor_name;
+        rakhub_usb_custom_tpl.iface = IOC_RS485;
+        rakhub_usb_custom_tpl.baudrate = baud;
+        rakhub_usb_custom_tpl.databit = databit;
+        rakhub_usb_custom_tpl.stopbit = stopbit;
+        rakhub_usb_custom_tpl.parity = parity;
+        rakhub_usb_custom_tpl.usePsm = usePsm;
+        rakhub_usb_custom_tpl.psm_if_psm = psm_if;
+        rakhub_usb_custom_tpl.psm_psw = psm_psw;
+        rakhub_usb_custom_tpl.psm_warmup_ms = psm_warmup;
+        rakhub_usb_custom_tpl.psm_pmode = psm_pmode;
+        rakhub_usb_custom_tpl.psm_method = psm_method;
+        rakhub_usb_custom_tpl.tasks = rakhub_usb_custom_tasks;
+        rakhub_usb_custom_tpl.taskCount = has_slot ? (uint8_t)(slot + 1) : 1;
+
+        rakhub_usb_override = true;
+        rakhub_usb_custom_active = true;
+        LOG_INFO("RAKHUB RS485 slot=%u task=%u stored (%lu baud, cmdlen=%u, tasks=%u). Send RAKHUB APPLY.",
+                 (unsigned)slot, (unsigned)taskid, (unsigned long)baud, (unsigned)cmdlen,
+                 (unsigned)rakhub_usb_custom_tpl.taskCount);
+        return;
+    }
+
+    if (strcmp(cmd, "AIC") == 0) {
+        uint8_t ch = 1;
+        uint16_t ipso_ai = 130;
+        int32_t min_v = 0, max_v = 5;
+        float offset_v = 0.0f;
+        char namebuf[17] = {0};
+        strncpy(namebuf, "ULB16_05", sizeof(namebuf) - 1);
+        bool usePsm = true;
+        uint8_t psm_if = 9, psm_psw = 1, psm_pmode = 0, psm_method = 1;
+        uint16_t psm_warmup = 10000;
+
+        char kvbuf[232];
+        strncpy(kvbuf, rest, sizeof(kvbuf) - 1);
+        kvbuf[sizeof(kvbuf) - 1] = '\0';
+
+        for (char *tok = strtok(kvbuf, " \t"); tok != nullptr; tok = strtok(nullptr, " \t")) {
+            char *eq = strchr(tok, '=');
+            if (!eq)
+                continue;
+            *eq++ = '\0';
+            if (strcmp(tok, "ch") == 0)
+                ch = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "ipso") == 0)
+                ipso_ai = (uint16_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "min") == 0)
+                min_v = (int32_t)strtol(eq, nullptr, 10);
+            else if (strcmp(tok, "max") == 0)
+                max_v = (int32_t)strtol(eq, nullptr, 10);
+            else if (strcmp(tok, "off") == 0)
+                offset_v = strtof(eq, nullptr);
+            else if (strcmp(tok, "name") == 0) {
+                strncpy(namebuf, eq, sizeof(namebuf) - 1);
+                namebuf[sizeof(namebuf) - 1] = '\0';
+            } else if (strcmp(tok, "psm") == 0)
+                usePsm = strtoul(eq, nullptr, 10) != 0;
+            else if (strcmp(tok, "if_psm") == 0)
+                psm_if = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "psw") == 0)
+                psm_psw = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "warmup") == 0)
+                psm_warmup = (uint16_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "pmode") == 0)
+                psm_pmode = (uint8_t)strtoul(eq, nullptr, 10);
+            else if (strcmp(tok, "method") == 0)
+                psm_method = (uint8_t)strtoul(eq, nullptr, 10);
+        }
+
+        memset(rakhub_usb_name[0], 0, sizeof(rakhub_usb_name[0]));
+        strncpy(rakhub_usb_name[0], namebuf, 16);
+
+        memset(&rakhub_usb_custom_tasks[0], 0, sizeof(rakhub_usb_custom_tasks[0]));
+        rakhub_usb_custom_tasks[0].taskKind = 1;
+        rakhub_usb_custom_tasks[0].taskId = ch;
+        rakhub_usb_custom_tasks[0].ipso = ipso_ai;
+        rakhub_usb_custom_tasks[0].profileName = rakhub_usb_name[0];
+        rakhub_usb_custom_tasks[0].min = min_v;
+        rakhub_usb_custom_tasks[0].max = max_v;
+        rakhub_usb_custom_tasks[0].offset = offset_v;
+
+        strncpy(rakhub_usb_sensor_name, "USB-AIC", sizeof(rakhub_usb_sensor_name) - 1);
+        rakhub_usb_sensor_name[sizeof(rakhub_usb_sensor_name) - 1] = '\0';
+        memset(&rakhub_usb_custom_tpl, 0, sizeof(rakhub_usb_custom_tpl));
+        rakhub_usb_custom_tpl.sensorName = rakhub_usb_sensor_name;
+        rakhub_usb_custom_tpl.iface = IOC_AIC;
+        rakhub_usb_custom_tpl.usePsm = usePsm;
+        rakhub_usb_custom_tpl.psm_if_psm = psm_if;
+        rakhub_usb_custom_tpl.psm_psw = psm_psw;
+        rakhub_usb_custom_tpl.psm_warmup_ms = psm_warmup;
+        rakhub_usb_custom_tpl.psm_pmode = psm_pmode;
+        rakhub_usb_custom_tpl.psm_method = psm_method;
+        rakhub_usb_custom_tpl.tasks = rakhub_usb_custom_tasks;
+        rakhub_usb_custom_tpl.taskCount = 1;
+
+        rakhub_usb_override = true;
+        rakhub_usb_custom_active = true;
+        LOG_INFO("RAKHUB AIC profile stored (ch=%u). Send RAKHUB APPLY.", (unsigned)ch);
+        return;
+    }
+
+    LOG_INFO("RAKHUB: unknown \"%s\". Try RAKHUB HELP.", cmd);
+}
+
+static void rakhubUsbPollSerial()
+{
+    while (Serial.available() > 0) {
+        int c = Serial.read();
+        if (c < 0)
+            break;
+        if (c == '\r')
+            continue;
+        if (c == '\n') {
+            if (rakhub_usb_line_len == 0)
+                continue;
+            rakhub_usb_line[rakhub_usb_line_len] = '\0';
+            rakhubUsbHandleLine(reinterpret_cast<char *>(rakhub_usb_line));
+            rakhub_usb_line_len = 0;
+            continue;
+        }
+        if (rakhub_usb_line_len + 1 >= sizeof(rakhub_usb_line)) {
+            rakhub_usb_line_len = 0;
+            LOG_INFO("RAKHUB: line overflow, discarded");
+            continue;
+        }
+        rakhub_usb_line[rakhub_usb_line_len++] = (char)c;
+    }
+}
+
+#endif // RAK_SENSORHUB_DOWNLINK_POC && RAK_SENSORHUB_USB_PROFILE
+
 /**
  * 1-Wire poll task (called periodically): send get.data(pid) when link is idle.
  * Includes hot-plug listen window (3 s no TX every 60 s), discovery get.data(0x01..0x04),
@@ -1505,6 +1924,10 @@ static int32_t onewirePollHandle()
 {
     const uint32_t now = millis();
     concurrency::LockGuard guard(&onewireLock);
+
+#if RAK_SENSORHUB_DOWNLINK_POC && RAK_SENSORHUB_USB_PROFILE
+    rakhubUsbPollSerial();
+#endif
 
     // Additional information: If a buffer contains data and no new bytes are added for an extended period of time, the buffer is discarded (to prevent residual frames from blocking the buffer).
     if (bufflen > 0 && (now - last_byte_time) > 50) {
@@ -1752,5 +2175,12 @@ void RAKSensorHub::setLastRead(uint32_t lastRead)
 {
     this->lastRead = lastRead;
 }
+
+#if defined(RAK_SENSORHUB_USB_PROFILE) && RAK_SENSORHUB_USB_PROFILE
+void rakhubNotifyProfileFileUploaded(const char *filename)
+{
+    LOG_INFO("RAKSensorHub: profile uploaded (POC stub): %s", filename ? filename : "(null)");
+}
+#endif
 
 #endif // HAS_RAKHUB  

@@ -1,71 +1,153 @@
-# RAK SensorHub Integration for Meshtastic
+# RAK SensorHub — Project entry (`README(Add_RAKSensorHub).md`)
 
-This branch (feature/add_RAKSensorHub) contains the ongoing work to integrate RAK's SensorHub ecosystem into the Meshtastic firmware. The goal is to enable Meshtastic devices to read data from a wide variety of RAK sensors and probes via the OneWire protocol, and report them as standard Meshtastic telemetry.
+**Purpose:** This file is the **single entry** for developers working on RAK SensorHub / Probe IO inside Meshtastic on branch `feature/add_RAKSensorHub`. Use it to find **primary sources**, **what to edit**, **build flags**, and **how capabilities map to versions**. Detailed commit hashes live in `doc/RAKSensorHub_CHANGELOG.md` (we **do not** duplicate that table here—update the changelog file when you land commits).
 
-### 📌 Current Status
+**Chinese design / PRD:** see `doc/RAKSensorHub_Architecture_zh.md`, `doc/README_RAKSensorHub_Downlink_POC.zh.md`, `doc/SensorHub_PRD_v0.1.md`.
 
-Core Protocol: The OneWire communication layer with RAK Probe IO and Sensor Probes is functional.
+---
 
-Sensor Support: Successfully tested with multiple sensor types:
+## 1. Documentation map
 
-RAK1901: Temperature & Humidity
+| Topic | Path |
+|-------|------|
+| Architecture (EN / ZH) | `doc/RAKSensorHub_Architecture_en.md`, `doc/RAKSensorHub_Architecture_zh.md` |
+| Downlink IOC POC (EN / ZH) | `doc/README_RAKSensorHub_Downlink_POC.en.md`, `doc/README_RAKSensorHub_Downlink_POC.zh.md` |
+| Roadmap / next phase | `doc/RAKSensorHub_Next_Phase_Design.md` (+ `.en.md`) |
+| Uplink IPSO ↔ sensors | `doc/RAKSensorHub_Uplink_Sensor_Support_List.en.md` |
+| CLI vs USB POC | `doc/RAKSensorHub&Meshtastic Python CLI 方案分析.md` |
+| **Commit-level changelog** | **`doc/RAKSensorHub_CHANGELOG.md`** ← append rows here after each meaningful merge |
 
-RAK1902: Barometric Pressure
+---
 
-RAK1904: 3-axis Accelerometer
+## 2. Changelog: README vs `doc/RAKSensorHub_CHANGELOG.md`
 
-RAK9154: Battery voltage, current, capacity, temperature
+- **Keep** `doc/RAKSensorHub_CHANGELOG.md` as the **authoritative git-derived history** (hash, date, one-line subject).
+- **This README** carries only **milestone semantics** so newcomers know “what generation of code” they are on:
 
-RS485 Soil Sensors: High-precision humidity, temperature, salinity, EC
+| Milestone | Meaning (branch narrative) |
+|-----------|-----------------------------|
+| M0 | SensorHub / `RAKSensorHub` introduced (`b77d9c94d`, `7efae8b61`). |
+| M1 | Uplink parse improvements (`fe0171fb0`). |
+| M2 | **Downlink IOC POC** on Hub (`IO_ADDPOLLEX` etc., `3e93e8fc8`). |
+| M3 | **AIC** `IO_DECODE` path (`f12f0819a`). |
+| M4 | Merge `develop`, docs / `platformio` hygiene (`e94e21094`, `9cf699d45`, `ecac05a5e`). |
+| M5 | **USB CDC `RAKHUB` + `bin/rakhub_usb_poc.py`** (`RAK_SENSORHUB_USB_PROFILE`), multi-task `slot=`, XMODEM hook stub; changelog row = `doc/RAKSensorHub_CHANGELOG.md` §一 首行（提交后补短 hash）。 |
 
-RK300-03: CO₂ concentration
+For the full table, open **`doc/RAKSensorHub_CHANGELOG.md`**.
 
-RK900-09 Weather Station: Wind speed, wind direction, temperature, humidity, pressure
+---
 
-RK200-03: Solar radiation (Pyranometer) via SDI-12
+## 3. Primary files (read these first)
 
-Data Flow: Parsed sensor data is successfully mapped to the Meshtastic EnvironmentMetrics structure and can be viewed in the app.
+| Area | Path | Role |
+|------|------|------|
+| Hub driver | `src/modules/Telemetry/Sensor/RAKSensorHub.cpp`, `.h` | OneWire poll/RX, IPSO → `EnvCache`, downlink POC state machine, optional USB `RAKHUB` parser |
+| Telemetry export | `src/modules/Telemetry/EnvironmentTelemetry.cpp`, `AirQualityTelemetry.cpp` | Maps hub metrics into Meshtastic protobuf for mesh/app |
+| Board flags | `variants/nrf52840/rak2560/platformio.ini` | **`HAS_RAKHUB`**, **`RAK_SENSORHUB_DOWNLINK_POC`**, **`RAK_SENSORHUB_DOWNLINK_TEMPLATE`**, **`RAK_SENSORHUB_USB_PROFILE`**, `lib_extra_dirs` → `RAK-OneWireSerial` |
+| OneWire library | **`RAK-OneWireSerial`** (see `lib_extra_dirs` in `platformio.ini`) | IOC helpers, framing, `RakSNHub_IOC_*` |
+| USB POC helper | `bin/rakhub_usb_poc.py` | Sends `RAKHUB …` lines over CDC (pyserial); not Meshtastic protobuf CLI |
+| XMODEM hook (stub) | `src/xmodem.cpp`, `src/modules/Telemetry/Sensor/RAKSensorHubProfile.h` | Profile upload callback wiring (POC / future profile file) |
 
-### ⚠️ Important Notes for This Branch
+---
 
-Configuration via WisToolBox: The current Meshtastic firmware build in this branch does not support configuring RAK hardware (like Probe IO) through the WisToolBox software. Any AT command configuration must be handled differently.
+## 4. What to change for which task
 
-Probe IO Configuration in Progress: Methods for configuring Probe IO (e.g., setting RS485 baud rates, adding Modbus polling tasks) are currently being tested. This is a work in progress to find the most reliable way to set up the hardware without WisToolBox.
+| Goal | Typical edits |
+|------|----------------|
+| New IPSO → **App telemetry** | `RAKSensorHub.cpp` (`EnvCache` / parse path / `getMetrics()`), then protobuf + `EnvironmentTelemetry.cpp` (or `AirQualityTelemetry.cpp`) as needed |
+| IPSO visible **only in USB log** today | Often **no** telemetry change yet—confirm in `onewireRxHandle` logs; then same row as above to promote to protobuf |
+| **Compile-time** downlink SKU template | **`variants/nrf52840/rak2560/platformio.ini`**: set `-DRAK_SENSORHUB_DOWNLINK_TEMPLATE=N` (see §5). Optionally adjust template tables in `RAKSensorHub.cpp` |
+| Enable / disable **downlink IOC engine** | **`platformio.ini`**: `-DRAK_SENSORHUB_DOWNLINK_POC=1` (on) or `0` (off). When off, IOC POC paths are not built |
+| **USB `RAKHUB`** runtime profiles | **`platformio.ini`**: `-DRAK_SENSORHUB_USB_PROFILE=1` **and** `RAK_SENSORHUB_DOWNLINK_POC=1`. Logic in `RAKSensorHub.cpp` (`#if RAK_SENSORHUB_DOWNLINK_POC && RAK_SENSORHUB_USB_PROFILE`) |
+| OneWire wire format / IOC API | **`RAK-OneWireSerial`** repo, then bump / path in `lib_extra_dirs` |
+| Script UX (lab only) | `bin/rakhub_usb_poc.py` |
 
-Development Phase: This is an active development branch. While core sensor reading is stable, configuration workflows and support for all possible RAK hardware combinations are still being validated.
+---
 
-### 🧪 Hardware Tested
+## 5. Build flags (`rak2560`) — how to use each version / mode
 
-Hub: RAK2560 (running this Meshtastic firmware)
+Edit **`variants/nrf52840/rak2560/platformio.ini`** under `[env:rak2560] build_flags`:
 
-IO Board: Probe IO (for RS485 and SDI-12 sensors)
+| Flag | Typical value | Effect |
+|------|----------------|--------|
+| `HAS_RAKHUB` | `1` | Builds RAK SensorHub path (uses OneWireSerial). **Mutually exclusive** with `HAS_RAKPROT` (see comment in `platformio.ini`). |
+| `RAK_SENSORHUB_DOWNLINK_POC` | `1` | Enables Hub → ProbeIO **IOC downlink POC** state machine (`IO_CFG`, `IO_ADDPOLLEX`, …). Set `0` for uplink-only experiments. |
+| `RAK_SENSORHUB_DOWNLINK_TEMPLATE` | `0`–`4` | Selects **built-in** `DownlinkSensorTemplate` when USB override is **not** active. Values (must match `RAKSensorHub.cpp`): **`0`** = clear-only (no `IO_CFG` / `IO_ADDPOLLEX` after clear); **`1`** = JXBS-3001-EC RS485 template; **`2`** = SDSIN soil 4-in-1; **`3`** = JXBS-4001-pH; **`4`** = AIC 4–20 mA (`IO_DECODE`). |
+| `RAK_SENSORHUB_USB_PROFILE` | `0` / `1` | `1` = USB CDC **`RAKHUB …`** text lines + `rakhubNotifyProfileFileUploaded` stub; requires **`RAK_SENSORHUB_DOWNLINK_POC=1`**. **Disconnect** Meshtastic protobuf clients from that CDC port while typing commands. |
 
-Probes: RAK1901, RAK1902, RAK1904
+**USB vs compile template:** After flashing, `RAKHUB COMPILE` restores compile-time `RAK_SENSORHUB_DOWNLINK_TEMPLATE`; `RAKHUB RS485` / `RAKHUB AIC` / `RAKHUB BUILTIN` store overrides until `RAKHUB APPLY`. See `doc/README_RAKSensorHub_Downlink_POC.*.md`.
 
-External Sensors: RK300-03 (CO₂, RS485), RK900-09 (Weather Station, RS485), RK200-03 (Pyranometer, SDI-12), Various soil sensors (RS485)
+**Probe IO:** After template changes, a **power-cycle / rejoin** is often required—treat as normal until productized.
 
-### 🚀 Getting Started (for Testers)
+---
 
-Flash the Firmware: Build and flash the firmware from this branch onto your RAK2560 device.
+## 6. Current status (snapshot)
 
+**Uplink**
+
+- OneWire to Probe IO is functional for supported builds.
+- **Meshtastic telemetry** only shows IPSOs mapped through `getMetrics()` → protobuf. Other IPSOs may appear **only in USB logs**—see `doc/RAKSensorHub_Architecture_en.md` §2.4.
+
+**Downlink / configuration (POC)**
+
+- IOC sequences aligned with Probe IO **core-1.2.27**.
+- **Not** WisToolBox inside the Meshtastic app; lab path is **USB `RAKHUB`** or compile-time template + `APPLY` flow.
+
+---
+
+## 7. Target state (short)
+
+- Single configuration schema (protobuf / JSON) shared by firmware, tools, and eventually App.
+- Remote admin over Meshtastic transports with explicit security.
+- See `doc/RAKSensorHub_Next_Phase_Design.md`.
+
+---
+
+## 8. Hardware reference
+
+| Role | Example |
+|------|---------|
+| Hub | RAK2560 (`pio run -e rak2560`) |
+| IO | Probe IO (RS485 / SDI-12 / 4–20 mA per wiring) |
+| Probes / externals | RAK1901/02/04, RK300-03, RK900-09, RK200-03, soil RS485, etc. |
+
+---
+
+## 9. Getting started
+
+```bash
+pio run -e rak2560 -t upload --upload-port COMx
 ```
-pio run -e rak2560 --target upload
-```
 
-Connect Hardware: Attach your RAK probes or Probe IO with external sensors to the RAK2560.
+1. Power / 12 V per RAK hardware docs.  
+2. **App telemetry:** connect Meshtastic app; confirm `EnvironmentMetrics` / `AirQualityMetrics`.  
+3. **Unmapped IPSO:** watch **USB serial** for `RAKSensorHub` / `+EVT` lines.  
+4. **USB POC:** disconnect protobuf on that port; `python bin/rakhub_usb_poc.py --port <COMx> status` or send `RAKHUB HELP`.
 
-Power Up: Ensure the system is powered correctly (Probe IO and some external sensors require 12V).
+### 9.1 USB & `bin/rakhub_usb_poc.py` (quick reference)
 
-Observe Telemetry: Connect to the device via the Meshtastic app. You should see environmental telemetry data appearing from the connected sensors.
+**Prereq:** `python -m pip install pyserial`. **Do not** use the same CDC port as the Meshtastic protobuf client while sending commands.
 
-### 🤝 How to Help / Provide Feedback
+| Action | Command |
+|--------|---------|
+| Status | `python bin/rakhub_usb_poc.py --port COMx status` |
+| RS485 + APPLY | `python bin/rakhub_usb_poc.py --port COMx --apply rs485 --baud 4800 --hex 010300120001 --ipso 112 --scale 0.1 --name GE` |
+| Multi RS485 (`--task-spec` → `slot=0,1,…`) | `python bin/rakhub_usb_poc.py --port COMx --apply rs485 --baud 4800 --task-spec "task=1,hex=010300000001,ipso=112,name=Hum" --task-spec "task=2,hex=010300010001,ipso=103,name=PH"` |
+| AIC + APPLY | `python bin/rakhub_usb_poc.py --port COMx --apply aic --ch 1 --ipso 130 --min 0 --max 5` |
+| Built-in template + APPLY (e.g. clear AIC path) | `python bin/rakhub_usb_poc.py --port COMx --apply builtin 4` |
+| APPLY for PID `0x01` | add `--pid 01` to any `--apply` command above |
 
-Your testing and feedback are invaluable! If you encounter issues or have suggestions:
+Full narrative + Chinese copy: `doc/README_RAKSensorHub_Downlink_POC.en.md` / `.zh.md`.
 
-Report Bugs: Please open an issue on this repository with details about your hardware setup and the problem observed.
+---
 
-Configuration Insights: If you have experience configuring Probe IO without WisToolBox (e.g., using direct serial commands), please share your findings!
+## 10. How to help
 
-Sensor Compatibility: Let us know which RAK sensors or third-party probes you've tested and whether they worked.
+- Issues: hardware list, **git hash**, `platformio.ini` flag snapshot, USB log excerpt.  
+- After merges: add a row to **`doc/RAKSensorHub_CHANGELOG.md`** (or replace the placeholder hash in §1 after your commit); bump §2 milestones here only if the narrative phase changes.
 
-We are actively working on stabilizing the configuration methods and will provide updates as progress is made.
+---
+
+## Branch note
+
+Uplink is the most mature path; **downlink + USB `RAKHUB`** remain **POC** until PRD / design milestones for protobuf + remote admin are met (`doc/SensorHub_PRD_v0.1.md`, `doc/RAKSensorHub_Next_Phase_Design.md`).
