@@ -2,7 +2,7 @@
 
 **Purpose:** This file is the **single entry** for developers working on RAK SensorHub / Probe IO inside Meshtastic on branch `feature/add_RAKSensorHub`. Use it to find **primary sources**, **what to edit**, **build flags**, and **how capabilities map to versions**. Detailed commit hashes live in `doc/RAKSensorHub_CHANGELOG.md` (we **do not** duplicate that table here—update the changelog file when you land commits).
 
-**Chinese design / PRD:** see `doc/RAKSensorHub_Architecture_zh.md`, `doc/README_RAKSensorHub_Downlink_POC.zh.md`, `doc/SensorHub_PRD_v0.1.md`.
+**Design / PRD:** see `doc/RAKSensorHub_Architecture_en.md`, `doc/README_RAKSensorHub_Downlink_POC.en.md`, `doc/SensorHub_PRD_v0.1.md`.
 
 ---
 
@@ -10,14 +10,14 @@
 
 | Topic | Path |
 |-------|------|
-| Architecture (EN / ZH) | `doc/RAKSensorHub_Architecture_en.md`, `doc/RAKSensorHub_Architecture_zh.md` |
-| Downlink IOC POC (EN / ZH) | `doc/README_RAKSensorHub_Downlink_POC.en.md`, `doc/README_RAKSensorHub_Downlink_POC.zh.md` |
+| Architecture | `doc/RAKSensorHub_Architecture_en.md` |
+| Downlink IOC POC (handoff) | `doc/README_RAKSensorHub_Downlink_POC.en.md` |
 | Roadmap / next phase | `doc/RAKSensorHub_Next_Phase_Design.md` (+ `.en.md`) |
 | Uplink IPSO ↔ sensors | `doc/RAKSensorHub_Uplink_Sensor_Support_List.en.md` |
-| CLI vs USB POC | `doc/RAKSensorHub&Meshtastic Python CLI 方案分析.md` |
+| Code map for new devs | `doc/RAKSensorHub_Code_Map_for_New_Dev.md` |
 | **Commit-level changelog** | **`doc/RAKSensorHub_CHANGELOG.md`** ← append rows here after each meaningful merge |
-| **上行 POC 固件发布流程**（`git worktree`、不破坏本地修改、GitHub Release） | **`doc/RAKSensorHub_Release_Uplink_POC.md`** |
-| **已构建上行 POC 的校验说明**（tag / commit / SHA256） | **`releases/uplink-poc/v2.7.21-raksensorhub-poc-uplink/README-RELEASE.md`** |
+| Uplink POC release process | `doc/RAKSensorHub_Release_Uplink_POC.md` |
+| Uplink POC build verification (tag / commit / SHA256) | `releases/uplink-poc/v2.7.21-raksensorhub-poc-uplink/README-RELEASE.md` |
 
 ---
 
@@ -139,7 +139,7 @@ pio run -e rak2560 -t upload --upload-port COMx
 | Built-in template + APPLY (e.g. clear AIC path) | `python bin/rakhub_usb_poc.py --port COMx --apply builtin 4` |
 | APPLY for PID `0x01` | add `--pid 01` to any `--apply` command above |
 
-Full narrative + Chinese copy: `doc/README_RAKSensorHub_Downlink_POC.en.md` / `.zh.md`.
+Full narrative: `doc/README_RAKSensorHub_Downlink_POC.en.md`.
 
 ---
 

@@ -1,0 +1,6 @@
+Git tag: v2.7.21-raksensorhub-poc-uplink
+Commit: bc893370c (RAKSensorHub：完善上行解析)
+Build: pio run -e rak2560
+PROGNAME: firmware-rak2560-2.7.22.bc89337 (Meshtastic base version in tree may read 2.7.22; tag is uplink POC label v2.7.21)
+UF2 MD5: d391b7c11f99c8dcafffaa5e9e68b8e7
+Artifacts: .uf2 (USB drag-and-drop), .zip (update bundle)
