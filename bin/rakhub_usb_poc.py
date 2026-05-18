@@ -152,22 +152,42 @@ def listen_serial(port: serial.Serial, duration_s: float, prefix: str = "< ") ->
         port.timeout = prev_timeout
 
 
+APPLY_ACK_MARKERS = (
+    "RAKHUB APPLY:",
+    "downlink re-armed",
+    "downlink POC scheduled",
+    "IO_RMPOLL",
+    "downlink POC cleared",
+    "downlink POC queued",
+    "downlink done",
+)
+
+
 def listen_serial_lines(
     port: serial.Serial,
     max_lines: int,
     prefix: str = "< ",
     idle_timeout_s: float = 1.5,
     hard_cap_s: float = 45.0,
-) -> None:
-    """Print up to ``max_lines`` LF-terminated RX lines (for quick post-config verification)."""
+    *,
+    require_apply_ack: bool = False,
+    apply_ack_timeout_s: float = 25.0,
+) -> bool:
+    """Print up to ``max_lines`` LF-terminated RX lines (for quick post-config verification).
+
+    When ``require_apply_ack`` is set, keep reading until an APPLY/downlink marker appears or
+    ``apply_ack_timeout_s`` elapses (avoids exiting after only the RS485 "stored" lines).
+    Returns True if an APPLY ack marker was seen.
+    """
     if max_lines <= 0:
-        return
+        return not require_apply_ack
     buf = bytearray()
     prev_timeout = port.timeout
     port.timeout = 0.08
     lines_done = 0
     t0 = time.monotonic()
     last_data = t0
+    saw_apply_ack = False
     try:
         while lines_done < max_lines and (time.monotonic() - t0) < hard_cap_s:
             chunk = port.read(4096)
@@ -184,12 +204,26 @@ def listen_serial_lines(
                     text = raw.decode("utf-8", errors="replace").rstrip("\r")
                     print(f"{prefix}{text}")
                     lines_done += 1
+                    if any(m in text for m in APPLY_ACK_MARKERS):
+                        saw_apply_ack = True
             else:
+                elapsed = now - t0
+                if require_apply_ack and not saw_apply_ack and elapsed < apply_ack_timeout_s:
+                    time.sleep(0.02)
+                    continue
                 if lines_done > 0 and (now - last_data) >= idle_timeout_s:
                     break
                 time.sleep(0.02)
     finally:
         port.timeout = prev_timeout
+    if require_apply_ack and not saw_apply_ack:
+        print(
+            "# warn: no APPLY ack in serial tail (expected one of: "
+            + ", ".join(APPLY_ACK_MARKERS[:3])
+            + ", ...). Keep port open longer or run: monitor",
+            file=sys.stderr,
+        )
+    return saw_apply_ack
 
 
 def cmd_monitor(args: argparse.Namespace, port: serial.Serial) -> None:
@@ -441,11 +475,17 @@ def cmd_json(args: argparse.Namespace, port: serial.Serial) -> None:
         time.sleep(0.05)
 
     if args.apply:
-        time.sleep(0.2)
+        time.sleep(0.3)
         send_line(port, "RAKHUB APPLY")
         if args.post_apply_lines > 0:
             print(f"# tail: up to {args.post_apply_lines} serial lines after APPLY", file=sys.stderr)
-            listen_serial_lines(port, args.post_apply_lines)
+            listen_serial_lines(
+                port,
+                args.post_apply_lines,
+                idle_timeout_s=3.0,
+                hard_cap_s=60.0,
+                require_apply_ack=True,
+            )
 
 
 def cmd_clear(args: argparse.Namespace, port: serial.Serial) -> None:
@@ -557,7 +597,7 @@ def main() -> int:
         type=int,
         default=20,
         metavar="N",
-        help="With --apply: print up to N serial log lines after RAKHUB APPLY (0=skip)",
+        help="With --apply: print up to N serial log lines after RAKHUB APPLY (0=skip; waits for APPLY ack)",
     )
 
     clr = sub.add_parser(

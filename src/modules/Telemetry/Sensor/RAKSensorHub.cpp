@@ -97,6 +97,11 @@ static uint8_t downlink_poc_wait_pid = 0;
 // Half-duplex: minimum gap between IOC steps so Probe can finish RSP before the next QSEND (reduces +ERR:SEQUCE).
 static const uint32_t DOWNLINK_POC_IOC_GAP_MS = 400;
 static uint32_t downlink_poc_next_ms = 0;
+// After a successful config downlink, pause Hub get.data so Probe can run RS485/DI polls (reduces +ERR:SEQUCE / log flood).
+static const uint32_t DOWNLINK_POC_POST_DONE_COOLDOWN_MS = 8000;
+static uint32_t downlink_poc_cooldown_until = 0;
+// If probe ignores CONTROL reboot, do not block USB APPLY forever in wait_rejoin.
+static const uint32_t DOWNLINK_POC_WAIT_REJOIN_TIMEOUT_MS = 30000;
 
 static bool downlinkIfaceUsesTransPoll(uint8_t iface)
 {
@@ -576,10 +581,11 @@ static void rakhubUsbTriggerDownlink(uint8_t pid)
     downlink_poc_phase = 0;
     downlink_poc_step = 0;
     downlink_poc_wait_rejoin = false;
+    downlink_poc_cooldown_until = 0;
     downlink_poc_pending = true;
     downlink_poc_pid = p;
     downlink_poc_next_ms = 0;
-    LOG_INFO("RAKSensorHub USB: downlink re-armed PID=0x%02x", p);
+    LOG_INFO("RAKHUB APPLY: downlink re-armed PID=0x%02x (clear+config will run when 1-Wire idle)", p);
 }
 
 #endif // RAK_SENSORHUB_DOWNLINK_POC && RAK_SENSORHUB_USB_PROFILE
@@ -688,9 +694,19 @@ static bool downlinkDecodeNeedsPostReboot(uint8_t iface)
     return iface == IOC_DI || iface == IOC_DO;
 }
 
+static void downlinkPocMarkDone(uint32_t cooldownMs)
+{
+    downlink_poc_pending = false;
+    downlink_poc_done = true;
+    downlink_poc_cooldown_until = millis() + cooldownMs;
+}
+
 static void scheduleDownlinkPoc(uint8_t pid)
 {
     if (pid == 0 || pid == PID_MASTER || downlink_poc_pending)
+        return;
+    // Hot-plug +ADD:PID must not restart a finished USB APPLY downlink (clears RS485/DI in EEPROM).
+    if (downlink_poc_done && !downlink_poc_wait_rejoin)
         return;
 
     // If we were waiting for the probe to restart and rejoin, continue with config phase
@@ -767,7 +783,7 @@ static bool sendNextDownlinkPoc()
         } else if (downlink_poc_step == clear_finish_step) {
             downlink_poc_pending = false;
             if (!config_enabled) {
-                downlink_poc_done = true;
+                downlinkPocMarkDone(3000);
                 LOG_INFO("RAKSensorHub downlink POC clear-only done (RAK_SENSORHUB_DOWNLINK_TEMPLATE=0): PID=0x%02x",
                          downlink_poc_pid);
                 return false;
@@ -781,8 +797,7 @@ static bool sendNextDownlinkPoc()
             return false;
         } else {
             // Should not reach
-            downlink_poc_pending = false;
-            downlink_poc_done = true;
+            downlinkPocMarkDone(3000);
             return false;
         }
     } else if (downlink_poc_step == 0) {
@@ -862,8 +877,7 @@ static bool sendNextDownlinkPoc()
                          tpl->sensorName, (unsigned)downlink_poc_pid);
                 RakSNHub_Protocl_API.probe_reboot(downlink_poc_pid);
             } else if (downlink_poc_step == finishStep) {
-                downlink_poc_pending = false;
-                downlink_poc_done = true;
+                downlinkPocMarkDone(DOWNLINK_POC_POST_DONE_COOLDOWN_MS);
                 if (tpl->iface == IOC_DI) {
                     LOG_INFO(
                         "RAKSensorHub %s downlink done: IO_DECODE(DI) in EEPROM; probe rebooted — expect IPSO[00] on "
@@ -901,8 +915,7 @@ static bool sendNextDownlinkPoc()
                 RakSNHub_Protocl_API.ioc.send(downlink_poc_pid, IO_POLLTASK, tpl->iface, IOA_RSP, (const uint8_t *)&polltask,
                                               sizeof(polltask));
             } else {
-                downlink_poc_pending = false;
-                downlink_poc_done = true;
+                downlinkPocMarkDone(DOWNLINK_POC_POST_DONE_COOLDOWN_MS);
                 LOG_INFO("RAKSensorHub %s downlink POC queued all IOC commands", tpl->sensorName);
                 return false;
             }
@@ -1120,7 +1133,7 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         if (last_sent_pid_valid && pid == last_sent_pid && pid != PID_MASTER && provision_list.count(pid) == 0) {
             provision_list.insert(pid);
             data_poll_pid = pid;
-                data_poll_pid_valid = true;
+            data_poll_pid_valid = true;
             LOG_INFO("+ADD:PID:[%02x] from discovery response", pid);
 #if RAK_SENSORHUB_DOWNLINK_POC
             scheduleDownlinkPoc(pid);
@@ -1148,15 +1161,19 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         (void)sid;
         break;
 
-    case SNHUBAPI_EVT_ADD_PID:
-        LOG_INFO("+ADD:PID:[%02x]", msg[0]);
-        provision_list.insert(msg[0]);
-        data_poll_pid = msg[0];
+    case SNHUBAPI_EVT_ADD_PID: {
+        const uint8_t new_pid = msg[0];
+        const bool first_seen = (provision_list.count(new_pid) == 0);
+        LOG_INFO("+ADD:PID:[%02x]", new_pid);
+        provision_list.insert(new_pid);
+        data_poll_pid = new_pid;
         data_poll_pid_valid = true;
 #if RAK_SENSORHUB_DOWNLINK_POC
-        scheduleDownlinkPoc(msg[0]);
+        if (first_seen)
+            scheduleDownlinkPoc(new_pid);
 #endif
         break;
+    }
 
 #if RAK_SENSORHUB_DOWNLINK_POC
     case SNHUBAPI_EVT_IOC_RSP: {
@@ -1888,7 +1905,8 @@ static int32_t onewireRxHandle()
                 provision_list.insert(pid);
                 LOG_INFO("+BOOT:PID[%02x] from capability (len=%u) hot-plug", pid, (unsigned)payload_len);
 #if RAK_SENSORHUB_DOWNLINK_POC
-                scheduleDownlinkPoc(pid);
+                if (!downlink_poc_pending && !downlink_poc_wait_rejoin)
+                    scheduleDownlinkPoc(pid);
 #endif
             }
             // Quiet TX briefly after capability traffic to reduce chance of colliding with probe join/provision handshake.
@@ -2432,7 +2450,11 @@ static int32_t onewirePollHandle()
         listen_window_until = now + LISTEN_WINDOW_DURATION_MS;
         LOG_INFO("RAKSensorHub: listen window 3s (hot-plug)");
     }
+#if RAK_SENSORHUB_DOWNLINK_POC
+    if (now < listen_window_until && !downlink_poc_pending && !downlink_poc_wait_rejoin) {
+#else
     if (now < listen_window_until) {
+#endif
         return 150; // no poll/TX; let onewireRxHandle receive unsolicited capability
     }
     // If we are seeing capability/provision traffic but haven't provisioned a PID yet, stay quiet for a short time.
@@ -2486,6 +2508,16 @@ static int32_t onewirePollHandle()
 #endif
 
 #if RAK_SENSORHUB_DOWNLINK_POC
+    if (downlink_poc_wait_rejoin && (now - downlink_poc_wait_since) >= DOWNLINK_POC_WAIT_REJOIN_TIMEOUT_MS) {
+        LOG_WARN("RAKSensorHub: probe rejoin timeout (%lus) — starting config phase anyway (PID=0x%02x)",
+                 (unsigned long)(DOWNLINK_POC_WAIT_REJOIN_TIMEOUT_MS / 1000u), (unsigned)downlink_poc_wait_pid);
+        downlink_poc_wait_rejoin = false;
+        downlink_poc_phase = 1;
+        downlink_poc_step = 0;
+        downlink_poc_pending = true;
+        downlink_poc_pid = downlink_poc_wait_pid;
+        downlink_poc_next_ms = 0;
+    }
     if (link_idle && downlink_poc_pending && (now - last_err_time) > 300 && now >= downlink_poc_next_ms) {
         if (sendNextDownlinkPoc()) {
             downlink_poc_next_ms = now + DOWNLINK_POC_IOC_GAP_MS;
@@ -2499,19 +2531,28 @@ static int32_t onewirePollHandle()
     if (downlink_poc_pending || downlink_poc_wait_rejoin) {
         if (now - status_delta >= 5000) {
             status_delta = now;
-            LOG_INFO("RAKSensorHub: downlink active (phase=%u step=%u) — get.data paused",
-                     (unsigned)downlink_poc_phase, (unsigned)downlink_poc_step);
+            if (downlink_poc_wait_rejoin) {
+                LOG_INFO("RAKSensorHub: waiting probe rejoin (%lums, PID=0x%02x) — get.data paused",
+                         (unsigned long)(now - downlink_poc_wait_since), (unsigned)downlink_poc_wait_pid);
+            } else {
+                LOG_INFO("RAKSensorHub: downlink active (phase=%u step=%u) — get.data paused",
+                         (unsigned)downlink_poc_phase, (unsigned)downlink_poc_step);
+            }
         }
         return 100;
     }
 #endif
 
-    // Discovery: when no PIDs, or periodically (hot-plug), try get.data(0x01..0x04) to trigger probe response
+#if RAK_SENSORHUB_DOWNLINK_POC
+    if (downlink_poc_done && now < downlink_poc_cooldown_until) {
+        return 100;
+    }
+#endif
+
+    // Discovery: only while no provisioned PID (avoid periodic get.data on an active probe).
     static uint32_t last_discovery_time = 0;
     static uint8_t discovery_pid = 0x01;
-    const bool run_discovery =
-        (provision_list.empty() && (now - last_discovery_time) >= 5000) ||
-        (!provision_list.empty() && (now - last_discovery_time) >= LISTEN_WINDOW_INTERVAL_MS);
+    const bool run_discovery = provision_list.empty() && (now - last_discovery_time) >= 5000;
     if (run_discovery && link_idle && (now - last_err_time) > 500) {
         last_discovery_time = now;
         RakSNHub_Protocl_API.get.data(discovery_pid);
@@ -2534,6 +2575,8 @@ static int32_t onewirePollHandle()
             RakSNHub_Protocl_API.get.data(data_poll_pid);
             last_sent_pid = data_poll_pid;
             last_sent_pid_valid = true;
+            awaiting_rsp = true;
+            awaiting_rsp_since = now;
             return 100;
         }
     }
@@ -2546,6 +2589,8 @@ static int32_t onewirePollHandle()
             RakSNHub_Protocl_API.get.data(data_poll_pid);
             last_sent_pid = data_poll_pid;
             last_sent_pid_valid = true;
+            awaiting_rsp = true;
+            awaiting_rsp_since = now;
         }
         last_poll_time = now;
         return 100;
