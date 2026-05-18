@@ -49,6 +49,8 @@ struct EnvCache {
     ScalarReading salinity;              // 0x13 salinity mg/L
     ScalarReading ec;                    // 0xC0 conductivity μS/cm
     ScalarReading co2;                   // 0x7D co2 ppm
+    ScalarReading digital_input;         // 0x00 DI: 0/1 (edge-driven uplink)
+    ScalarReading digital_output;        // 0x01 DO: 0/1 state
     AccelReading accel;                  // 0x71 accelerometer m/s²
 };
 

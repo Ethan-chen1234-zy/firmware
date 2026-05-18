@@ -3,8 +3,8 @@
 This document describes the design, architecture, and runtime behavior of `RAKSensorHub` as implemented in
 `src/modules/Telemetry/Sensor/RAKSensorHub.cpp` / `.h`, and how it integrates with the Meshtastic firmware.
 
-The focus is **uplink telemetry only** (reading sensors via RAK Probe IO / SensorHub). Downlink configuration
-of Probe IO / RS485 devices is intentionally out of scope for the current firmware snapshot.
+The implementation is primarily focused on **uplink telemetry**, and now also includes a **downlink IOC technical POC**
+for Probe IO / RS485 / AIC provisioning. A production CLI/App configuration surface is still future work.
 
 ---
 
@@ -77,6 +77,12 @@ ultimately mapped into `EnvironmentMetrics.voltage` and `.current`.
 - `accel` (0x71, 3‑axis accelerometer)
 
 This single cache is filled whenever IPSO sensor frames are parsed and later read out in `getMetrics()`.
+
+#### 2.4 Meshtastic telemetry visibility vs USB logs
+
+- The **mobile app / mesh telemetry** only shows IPSO values that are actually mapped in `RAKSensorHub::getMetrics()` into **Meshtastic protobuf** fields (primarily `EnvironmentMetrics`, `AirQualityMetrics`, and other existing telemetry messages).
+- IPSO IDs that are **not** wired through to protobuf (e.g. some custom RS485 objects, AIC/raw paths only logged, or any ID not yet handled in `EnvCache` / `getMetrics()`) may still appear as **`LOG_INFO` lines on the USB serial console** (e.g. from `onewireRxHandle`) so you can verify that Probe IO is sending data—but they **will not** surface as first-class telemetry fields in the Meshtastic app until firmware + protobuf (and usually the app) are extended.
+- To expose a new type in the app: add the **IPSO → `EnvCache` / `getMetrics()`** mapping in firmware and extend **protobuf** (and client UI) as needed; see `doc/RAKSensorHub_Next_Phase_Design.md` (data layer) and the uplink sensor list doc.
 
 ---
 

@@ -1,0 +1,12 @@
+{
+    "SensorName": "DI_01",
+    "TemplateVersion": "1",
+    "ProbeioVersion": "1.2.7",
+    "Interface": "AI",
+    "Content": [
+      "atc+io_psm={PRB_ID}:9:1:10000:0:1",
+      "ATC+SNSR_CONF={PRB_ID}:8:{SNSR_INTV}:2",
+      "atc+io_decode={PRB_ID}:di:1:0:2:100:{PROFILE_NAME}",
+      "atc+prb_del={PRB_ID}"
+      ]
+}
