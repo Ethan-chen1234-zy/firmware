@@ -321,6 +321,10 @@ typedef enum _meshtastic_HardwareModel {
     meshtastic_HardwareModel_HELTEC_MESH_NODE_T1 = 133,
     /* B&Q Consulting Station G3: TBD */
     meshtastic_HardwareModel_STATION_G3 = 134,
+    /* Lilygo T-Impulse-Plus */
+    meshtastic_HardwareModel_T_IMPULSE_PLUS = 135,
+    /* Lilygo T-Echo Card */
+    meshtastic_HardwareModel_T_ECHO_CARD = 136,
     /* ------------------------------------------------------------------------------------------------------------------------------------------
  Reserved ID For developing private Ports. These will show up in live traffic sparsely, so we can use a high number. Keep it within 8 bits.
  ------------------------------------------------------------------------------------------------------------------------------------------ */
@@ -654,7 +658,14 @@ typedef enum _meshtastic_LockdownStatus_State {
  token's TTL. */
     meshtastic_LockdownStatus_State_UNLOCKED = 3,
     /* Passphrase rejected. backoff_seconds is non-zero when rate-limited. */
-    meshtastic_LockdownStatus_State_UNLOCK_FAILED = 4
+    meshtastic_LockdownStatus_State_UNLOCK_FAILED = 4,
+    /* Lockdown is supported by this firmware but not currently active
+ (no passphrase has been provisioned, or it was disabled via
+ AdminMessage.lockdown_auth.disable). The device is operating in
+ normal, non-encrypted mode. Clients render the lockdown-mode
+ toggle as OFF on receiving this. Distinct from NEEDS_PROVISION,
+ which is only used during an in-progress enable flow. */
+    meshtastic_LockdownStatus_State_DISABLED = 5
 } meshtastic_LockdownStatus_State;
 
 /* Struct definitions */
@@ -1529,8 +1540,8 @@ extern "C" {
 #define _meshtastic_LogRecord_Level_ARRAYSIZE ((meshtastic_LogRecord_Level)(meshtastic_LogRecord_Level_CRITICAL+1))
 
 #define _meshtastic_LockdownStatus_State_MIN meshtastic_LockdownStatus_State_STATE_UNSPECIFIED
-#define _meshtastic_LockdownStatus_State_MAX meshtastic_LockdownStatus_State_UNLOCK_FAILED
-#define _meshtastic_LockdownStatus_State_ARRAYSIZE ((meshtastic_LockdownStatus_State)(meshtastic_LockdownStatus_State_UNLOCK_FAILED+1))
+#define _meshtastic_LockdownStatus_State_MAX meshtastic_LockdownStatus_State_DISABLED
+#define _meshtastic_LockdownStatus_State_ARRAYSIZE ((meshtastic_LockdownStatus_State)(meshtastic_LockdownStatus_State_DISABLED+1))
 
 #define meshtastic_Position_location_source_ENUMTYPE meshtastic_Position_LocSource
 #define meshtastic_Position_altitude_source_ENUMTYPE meshtastic_Position_AltSource

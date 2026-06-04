@@ -22,8 +22,6 @@
 #if ARCH_PORTDUINO
 #include "Throttle.h"
 #include "platform/portduino/PortduinoGlue.h"
-#endif
-#if ENABLE_JSON_LOGGING || ARCH_PORTDUINO
 #include "serialization/MeshPacketSerializer.h"
 #endif
 
@@ -318,10 +316,11 @@ ErrorCode Router::send(meshtastic_MeshPacket *p)
     } // should have already been handled by sendLocal
 
     // Abort sending if we are violating the duty cycle
-    if (!config.lora.override_duty_cycle && myRegion->dutyCycle < 100) {
+    float effectiveDutyCycle = getEffectiveDutyCycle();
+    if (!config.lora.override_duty_cycle && effectiveDutyCycle < 100) {
         float hourlyTxPercent = airTime->utilizationTXPercent();
-        if (hourlyTxPercent > myRegion->dutyCycle) {
-            uint8_t silentMinutes = airTime->getSilentMinutes(hourlyTxPercent, myRegion->dutyCycle);
+        if (hourlyTxPercent > effectiveDutyCycle) {
+            uint8_t silentMinutes = airTime->getSilentMinutes(hourlyTxPercent, effectiveDutyCycle);
 
             LOG_WARN("Duty cycle limit exceeded. Aborting send for now, you can send again in %d mins", silentMinutes);
 
@@ -368,10 +367,14 @@ ErrorCode Router::send(meshtastic_MeshPacket *p)
     }
 
     fixPriority(p); // Before encryption, fix the priority if it's unset
-    if (!applyPositionPrecisionForChannel(*p, p->channel)) {
-        LOG_ERROR("Dropping malformed position packet before send");
-        packetPool.release(p);
-        return meshtastic_Routing_Error_BAD_REQUEST;
+    // Position precision is an originator-only privacy policy. Relays keep
+    // p->from as the original sender, so do not rewrite their POSITION_APP payload.
+    if (isFromUs(p)) {
+        if (!applyPositionPrecisionForChannel(*p, p->channel)) {
+            LOG_ERROR("Dropping malformed position packet before send");
+            packetPool.release(p);
+            return meshtastic_Routing_Error_BAD_REQUEST;
+        }
     }
 
     // If the packet is not yet encrypted, do so now
@@ -550,9 +553,7 @@ DecodeState perhapsDecode(meshtastic_MeshPacket *p)
         } */
 
         printPacket("decoded message", p);
-#if ENABLE_JSON_LOGGING
-        LOG_TRACE("%s", MeshPacketSerializer::JsonSerialize(p, false).c_str());
-#elif ARCH_PORTDUINO
+#if ARCH_PORTDUINO
         if (portduino_config.traceFilename != "" || portduino_config.logoutputlevel == level_trace) {
             LOG_TRACE("%s", MeshPacketSerializer::JsonSerialize(p, false).c_str());
         } else if (portduino_config.JSONFilename != "") {
@@ -847,11 +848,7 @@ void Router::handleReceived(meshtastic_MeshPacket *p, RxSource src)
 
 void Router::perhapsHandleReceived(meshtastic_MeshPacket *p)
 {
-#if ENABLE_JSON_LOGGING
-    // Even ignored packets get logged in the trace
-    p->rx_time = getValidTime(RTCQualityFromNet); // store the arrival timestamp for the phone
-    LOG_TRACE("%s", MeshPacketSerializer::JsonSerializeEncrypted(p).c_str());
-#elif ARCH_PORTDUINO
+#if ARCH_PORTDUINO
     // Even ignored packets get logged in the trace
     if (portduino_config.traceFilename != "" || portduino_config.logoutputlevel == level_trace) {
         p->rx_time = getValidTime(RTCQualityFromNet); // store the arrival timestamp for the phone
