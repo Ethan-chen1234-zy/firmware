@@ -6,7 +6,7 @@
 > **ProbeIO reference**: `core-1.2.27` (aligned with shipped ProbeIO).  
 > **Chinese version**: [`RAKSensorHub_Task_Plan.md`](RAKSensorHub_Task_Plan.md)
 
-**Document version**: 0.6 · **Last reviewed**: 2026-05-15
+**Document version**: 0.9 · **Last reviewed**: 2026-05-22
 
 ---
 
@@ -24,9 +24,9 @@
 
 **Scope note**: This is a **RAK2560 + ProbeIO POC** roadmap, not a full upstream Meshtastic commitment. Merging `telemetry.proto` needs separate coordination.
 
-### 0.2 Current status (2026-05-15, code-reviewed)
+### 0.2 Current status (2026-05-22, monolith @ v2.7.25)
 
-**One-liner**: Multi-interface downlink IOC (including DI) is demo-ready via USB/JSON; **post-IO_DECODE reboot** for DI/DO; uplink **IPSO[00]/[01]** parsed to EnvCache; **EC/pH/salinity still not in App**; downlink now **pauses get.data** (SEQUCE may still appear).
+**One-liner**: Sprint 1 **P0 done in tree** — `telemetry.proto` fields 24–26, `getMetrics()` exports EC/pH/salinity, D2-5 IOC RSP timeout tuned, `rakhub_usb_poc.py` hub-ready wait. **Hardware re-verify** on bench still required.
 
 | Capability | Status | Evidence |
 |------------|--------|----------|
@@ -35,10 +35,10 @@
 | Post-IO_DECODE reboot (DI/DO) | ✅ | Firmware reboots after `IO_DECODE` so `rak_di_init()` applies PB13 |
 | Pause `get.data` during downlink | ✅ Partial | While `downlink_poc_pending` / `wait_rejoin` |
 | Uplink IPSO parse → EnvCache | ✅ Partial | Temp/humidity/wind/soil/EC/pH/salinity + **DI/DO** |
-| Uplink → App (`getMetrics`) | ⚠️ Gap | `getMetrics()` does **not** export `ec` / `soil_ph` / `salinity` |
-| `telemetry.proto` new fields | ❌ Not started | Proposed fields 24–26 + `regen-protos.sh` |
+| Uplink → App (`getMetrics`) | ✅ P0 | `soil_conductivity`, `soil_ph`, `salinity` (fields 24–26) |
+| `telemetry.proto` new fields | ✅ P0 | `protobufs/` submodule + patched `telemetry.pb.h` (regen script needs nanopb bundle on host) |
 | Uplink IPSO=0 (DI) logging | 🔄 Partial | `SDATA`/`REPORT` + `EnvCache.digital_input`; edge-triggered |
-| IOC production stability | 🔄 In progress | Poll paused; full per-step RSP wait TBD |
+| IOC production stability | 🔄 Improved | Poll paused; 5 s IOC RSP timeout (no get.data PID rotate); gap 400 ms — bench retest |
 | Admin / NVS remote config | ❌ Not started | Sprint 3 |
 
 ### 0.3 Direction (next 1–2 iterations)
@@ -82,7 +82,7 @@
 | D2-2 | DI / DO USB CLI + JSON | ✅ DI · ⚠️ DO | P2 | `RAKHUB DI`; DO has `BUILTIN 8`, USB `do` subcommand TBD |
 | D2-3 | RS232 downlink | ✅ | P2 | `BUILTIN 7` |
 | D2-4 | Preset templates (NPK, water quality, …) | 🔄 | P2 | `BUILTIN 0–9` exist; need business JSON library |
-| D2-5 | IOC throttle, RSP gate, REBOOT after DI | 🔄 | **P1** | Done: pause poll + post-decode reboot; TBD: stepwise IOC+RSP |
+| D2-5 | IOC throttle, RSP gate, REBOOT after DI | 🔄 | **P0** | Pause poll + IOC_RSP clears waiter; 5 s timeout; script `--hub-ready-sec` |
 | D2-6 | USB template NVS persistence | ❌ | P3 | Survive power cycle |
 | D2-7 | `SensorHubConfig` Admin protobuf | ❌ | P2 | Depends on D1-4, D2-6 |
 
@@ -90,9 +90,9 @@
 
 | ID | Task | Status | Priority | Notes |
 |----|------|--------|----------|-------|
-| D1-4 | `telemetry.proto` fields 24–26 + regen | ❌ | **P1** | Parallel with D1-5 |
-| D1-5 | IPSO ↔ EnvCache ↔ Proto mapping doc | 🔄 | **P1** | See `RAKSensorHub_Uplink_Sensor_Support_List.en.md` |
-| D1-1 | `getMetrics()` export ec / ph / salinity | ❌ | **P1** | EnvCache populated; export layer missing |
+| D1-4 | `telemetry.proto` fields 24–26 + regen | ✅ | **P0** | `soil_conductivity`, `soil_ph`, `salinity` |
+| D1-5 | IPSO ↔ EnvCache ↔ Proto mapping doc | ✅ | **P0** | `RAKSensorHub_Uplink_Sensor_Support_List.en.md` §4 |
+| D1-1 | `getMetrics()` export ec / ph / salinity | ✅ | **P0** | `RAKSensorHub.cpp` |
 | D1-6 | `getMetrics()` export new IPSO fields | ❌ | P1 | After D1-3, D1-4 |
 | D1-2 | EnvCache extension (NPK, water, PM, …) | ❌ | P2 | New `env.*` scalars |
 | D1-3 | `onewire_evt()` new IPSO branches | ❌ | P2 | After D1-2 |
@@ -103,11 +103,11 @@
 
 | ID | Short name | What to do | Status | Done when |
 |----|------------|------------|--------|-----------|
-| **D1-1** | getMetrics soil trio | Export existing `ec`, `soil_ph`, `salinity` from EnvCache to `EnvironmentMetrics` / App | ❌ | App shows EC (mS/cm), pH, salinity (mg/L), not `distance` |
+| **D1-1** | getMetrics soil trio | Export existing `ec`, `soil_ph`, `salinity` from EnvCache to `EnvironmentMetrics` / App | ✅ | App shows EC (mS/cm), pH, salinity (mg/L), not `distance` |
 | **D1-2** | EnvCache extension | Add cache fields for NPK, water quality, PM2.5, etc. | ❌ | New scalars in `RAKSensorHub.h` |
 | **D1-3** | onewire_evt IPSO | New `switch` branches → `setScalar` for new IPSOs | ❌ | Serial LOG + EnvCache values |
-| **D1-4** | telemetry.proto | Add EnvironmentMetrics fields 24+; run `regen-protos.sh` | ❌ | `.pb.h` updated; build passes |
-| **D1-5** | Mapping table doc | Maintain IPSO ↔ quantity ↔ EnvCache ↔ proto field table | 🔄 | Single reference for newcomers |
+| **D1-4** | telemetry.proto | Add EnvironmentMetrics fields 24+; run `regen-protos.sh` | ✅ | `.pb.h` updated; build passes |
+| **D1-5** | Mapping table doc | Maintain IPSO ↔ quantity ↔ EnvCache ↔ proto field table | ✅ | §4 in uplink list |
 | **D1-6** | getMetrics bulk export | Export all D1-2/3 fields in `getMetrics()` | ❌ | Needs D1-4 proto fields |
 | **D1-7** | DI uplink | Parse **IPSO=0**, 1-byte 0/1, edge-triggered reports | 🔄 | `DI REPORT IPSO[00]` in log; Mesh/App TBD |
 | **D1-8** | Parser refactor | Unify duplicate IPSO switches into `parseIpso()` | ❌ | Same behavior, cleaner code |
@@ -276,6 +276,9 @@ Sprint 3: D2-6, D2-7, D1-8
 
 | Version | Date | Notes |
 |---------|------|-------|
+| 0.9 | 2026-05-22 | **P0 Sprint 1** on monolith v2.7.25: D1-4/5/1, D2-5 timeout, `rakhub_usb_poc.py --hub-ready-sec`; see `RAKSensorHub_POC_Sprint1_Verification.md` |
+| 0.8 | 2026-05-19 | v2.8.0 split tag local archive; branch reset to v2.7.25 monolith |
+| 0.7 | 2026-05-19 | Multi-file split phase 1–3; tags v2.7.25 / v2.8.0 |
 | 0.6 | 2026-05-15 | DI post-reboot, IPSO 00/01 uplink, partial D2-5; USB/JSON commit notes |
 | 0.5 | 2026-05-15 | §1.3/§1.4 per-task tables; BUILTIN table; English file created |
 | 0.4 | 2026-05 | §0 status/direction; §1 summary tables |

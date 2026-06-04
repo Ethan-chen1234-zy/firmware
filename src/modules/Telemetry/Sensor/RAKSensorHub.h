@@ -48,6 +48,16 @@ struct EnvCache {
     ScalarReading ph;                    // 0xC2 pH
     ScalarReading salinity;              // 0x13 salinity mg/L
     ScalarReading ec;                    // 0xC0 conductivity μS/cm
+    ScalarReading nitrogen;              // 0x10 N mg/kg
+    ScalarReading phosphorus;            // 0x11 P mg/kg
+    ScalarReading potassium;             // 0x12 K mg/kg
+    ScalarReading dissolved_oxygen;      // 0x14 DO mg/L
+    ScalarReading orp;                   // 0x15 ORP mV
+    ScalarReading cod;                   // 0x16 COD mg/L
+    ScalarReading turbidity;             // 0x17 NTU
+    ScalarReading nitrate;               // 0x18 NO3 ppm
+    ScalarReading ammonium;              // 0x19 NH4+ ppm
+    ScalarReading bod;                   // 0x1A BOD mg/L
     ScalarReading co2;                   // 0x7D co2 ppm
     ScalarReading digital_input;         // 0x00 DI: 0/1 (edge-driven uplink)
     ScalarReading digital_output;        // 0x01 DO: 0/1 state

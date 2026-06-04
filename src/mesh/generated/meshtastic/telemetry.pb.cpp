@@ -9,7 +9,7 @@
 PB_BIND(meshtastic_DeviceMetrics, meshtastic_DeviceMetrics, AUTO)
 
 
-PB_BIND(meshtastic_EnvironmentMetrics, meshtastic_EnvironmentMetrics, AUTO)
+PB_BIND(meshtastic_EnvironmentMetrics, meshtastic_EnvironmentMetrics, 2)
 
 
 PB_BIND(meshtastic_PowerMetrics, meshtastic_PowerMetrics, AUTO)

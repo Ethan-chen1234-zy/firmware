@@ -162,6 +162,51 @@ APPLY_ACK_MARKERS = (
     "downlink done",
 )
 
+# Hub boot / 1-Wire idle hints before APPLY (avoid cold-start race with probe rejoin).
+HUB_READY_MARKERS = (
+    "+ADD:PID",
+    "provision=",
+    "RAKSensorHub Status",
+    "1-Wire",
+)
+
+
+def wait_hub_ready(
+    port: serial.Serial,
+    timeout_s: float = 20.0,
+    prefix: str = "< ",
+) -> bool:
+    """Wait until firmware logs hub/probe readiness (or timeout)."""
+    if timeout_s <= 0:
+        return True
+    buf = bytearray()
+    prev_timeout = port.timeout
+    port.timeout = 0.08
+    t0 = time.monotonic()
+    try:
+        while (time.monotonic() - t0) < timeout_s:
+            chunk = port.read(4096)
+            if chunk:
+                buf.extend(chunk)
+                while True:
+                    nl = buf.find(b"\n")
+                    if nl < 0:
+                        break
+                    raw = buf[:nl]
+                    del buf[: nl + 1]
+                    text = raw.decode("utf-8", errors="replace").rstrip("\r")
+                    print(f"{prefix}{text}")
+                    upper = text.upper()
+                    if any(m.upper() in upper for m in HUB_READY_MARKERS):
+                        print(f"# hub ready ({timeout_s:.0f}s cap)", file=sys.stderr)
+                        return True
+            else:
+                time.sleep(0.02)
+    finally:
+        port.timeout = prev_timeout
+    print(f"# hub ready timeout ({timeout_s}s) — continuing anyway", file=sys.stderr)
+    return False
+
 
 def listen_serial_lines(
     port: serial.Serial,
@@ -475,6 +520,9 @@ def cmd_json(args: argparse.Namespace, port: serial.Serial) -> None:
         time.sleep(0.05)
 
     if args.apply:
+        if args.hub_ready_sec > 0:
+            print(f"# waiting hub ready up to {args.hub_ready_sec}s before APPLY", file=sys.stderr)
+            wait_hub_ready(port, timeout_s=float(args.hub_ready_sec))
         time.sleep(0.3)
         send_line(port, "RAKHUB APPLY")
         if args.post_apply_lines > 0:
@@ -598,6 +646,13 @@ def main() -> int:
         default=20,
         metavar="N",
         help="With --apply: print up to N serial log lines after RAKHUB APPLY (0=skip; waits for APPLY ack)",
+    )
+    jsn.add_argument(
+        "--hub-ready-sec",
+        type=float,
+        default=20.0,
+        metavar="SEC",
+        help="With --apply: wait up to SEC for hub/provision log lines before APPLY (0=skip)",
     )
 
     clr = sub.add_parser(

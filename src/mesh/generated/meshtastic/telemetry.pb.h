@@ -215,6 +215,51 @@ typedef struct _meshtastic_EnvironmentMetrics {
     /* One-wire temperature (*C) */
     pb_size_t one_wire_temperature_count;
     float one_wire_temperature[8];
+    /* Soil electrical conductivity (mS/cm). RAKSensorHub IPSO 0xC0 / 0x7F. */
+    bool has_soil_conductivity;
+    float soil_conductivity;
+    /* Soil pH (unitless, 0..14). RAKSensorHub IPSO 0xC1 / 0xC2. */
+    bool has_soil_ph;
+    float soil_ph;
+    /* Salinity (mg/L, typical 0..65535). RAKSensorHub IPSO 0x13. */
+    bool has_salinity;
+    float salinity;
+    /* Digital input (0/1). RAKSensorHub IPSO 0x00 (edge-driven uplink). */
+    bool has_digital_input;
+    uint32_t digital_input;
+    /* Digital output state (0/1). RAKSensorHub IPSO 0x01. */
+    bool has_digital_output;
+    uint32_t digital_output;
+    /* Soil nitrogen (mg/kg). RAKSensorHub IPSO 0x10. */
+    bool has_soil_nitrogen;
+    float soil_nitrogen;
+    /* Soil phosphorus (mg/kg). RAKSensorHub IPSO 0x11. */
+    bool has_soil_phosphorus;
+    float soil_phosphorus;
+    /* Soil potassium (mg/kg). RAKSensorHub IPSO 0x12. */
+    bool has_soil_potassium;
+    float soil_potassium;
+    /* Dissolved oxygen (mg/L). RAKSensorHub IPSO 0x14. */
+    bool has_dissolved_oxygen;
+    float dissolved_oxygen;
+    /* ORP (mV). RAKSensorHub IPSO 0x15. */
+    bool has_orp;
+    float orp;
+    /* COD (mg/L). RAKSensorHub IPSO 0x16. */
+    bool has_cod;
+    float cod;
+    /* Turbidity (NTU). RAKSensorHub IPSO 0x17. */
+    bool has_turbidity;
+    float turbidity;
+    /* Nitrate (ppm). RAKSensorHub IPSO 0x18. */
+    bool has_nitrate;
+    float nitrate;
+    /* Ammonium (ppm). RAKSensorHub IPSO 0x19. */
+    bool has_ammonium;
+    float ammonium;
+    /* BOD (mg/L). RAKSensorHub IPSO 0x1A. */
+    bool has_bod;
+    float bod;
 } meshtastic_EnvironmentMetrics;
 
 /* Power Metrics (voltage / current / etc) */
@@ -528,7 +573,7 @@ extern "C" {
 #define meshtastic_Nau7802Config_init_default    {0, 0}
 #define meshtastic_SEN5XState_init_default       {0, 0, 0, false, 0, false, 0, false, 0}
 #define meshtastic_DeviceMetrics_init_zero       {false, 0, false, 0, false, 0, false, 0, false, 0}
-#define meshtastic_EnvironmentMetrics_init_zero  {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}}
+#define meshtastic_EnvironmentMetrics_init_zero  {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define meshtastic_PowerMetrics_init_zero        {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define meshtastic_AirQualityMetrics_init_zero   {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define meshtastic_LocalStats_init_zero          {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
@@ -568,6 +613,21 @@ extern "C" {
 #define meshtastic_EnvironmentMetrics_soil_moisture_tag 21
 #define meshtastic_EnvironmentMetrics_soil_temperature_tag 22
 #define meshtastic_EnvironmentMetrics_one_wire_temperature_tag 23
+#define meshtastic_EnvironmentMetrics_soil_conductivity_tag 24
+#define meshtastic_EnvironmentMetrics_soil_ph_tag 25
+#define meshtastic_EnvironmentMetrics_salinity_tag 26
+#define meshtastic_EnvironmentMetrics_digital_input_tag 27
+#define meshtastic_EnvironmentMetrics_digital_output_tag 28
+#define meshtastic_EnvironmentMetrics_soil_nitrogen_tag 29
+#define meshtastic_EnvironmentMetrics_soil_phosphorus_tag 30
+#define meshtastic_EnvironmentMetrics_soil_potassium_tag 31
+#define meshtastic_EnvironmentMetrics_dissolved_oxygen_tag 32
+#define meshtastic_EnvironmentMetrics_orp_tag 33
+#define meshtastic_EnvironmentMetrics_cod_tag 34
+#define meshtastic_EnvironmentMetrics_turbidity_tag 35
+#define meshtastic_EnvironmentMetrics_nitrate_tag 36
+#define meshtastic_EnvironmentMetrics_ammonium_tag 37
+#define meshtastic_EnvironmentMetrics_bod_tag 38
 #define meshtastic_PowerMetrics_ch1_voltage_tag  1
 #define meshtastic_PowerMetrics_ch1_current_tag  2
 #define meshtastic_PowerMetrics_ch2_voltage_tag  3
@@ -694,7 +754,22 @@ X(a, STATIC,   OPTIONAL, FLOAT,    rainfall_1h,      19) \
 X(a, STATIC,   OPTIONAL, FLOAT,    rainfall_24h,     20) \
 X(a, STATIC,   OPTIONAL, UINT32,   soil_moisture,    21) \
 X(a, STATIC,   OPTIONAL, FLOAT,    soil_temperature,  22) \
-X(a, STATIC,   REPEATED, FLOAT,    one_wire_temperature,  23)
+X(a, STATIC,   REPEATED, FLOAT,    one_wire_temperature,  23) \
+X(a, STATIC,   OPTIONAL, FLOAT,    soil_conductivity,  24) \
+X(a, STATIC,   OPTIONAL, FLOAT,    soil_ph,          25) \
+X(a, STATIC,   OPTIONAL, FLOAT,    salinity,         26) \
+X(a, STATIC,   OPTIONAL, UINT32,   digital_input,    27) \
+X(a, STATIC,   OPTIONAL, UINT32,   digital_output,   28) \
+X(a, STATIC,   OPTIONAL, FLOAT,    soil_nitrogen,    29) \
+X(a, STATIC,   OPTIONAL, FLOAT,    soil_phosphorus,  30) \
+X(a, STATIC,   OPTIONAL, FLOAT,    soil_potassium,   31) \
+X(a, STATIC,   OPTIONAL, FLOAT,    dissolved_oxygen,  32) \
+X(a, STATIC,   OPTIONAL, FLOAT,    orp,              33) \
+X(a, STATIC,   OPTIONAL, FLOAT,    cod,              34) \
+X(a, STATIC,   OPTIONAL, FLOAT,    turbidity,        35) \
+X(a, STATIC,   OPTIONAL, FLOAT,    nitrate,          36) \
+X(a, STATIC,   OPTIONAL, FLOAT,    ammonium,         37) \
+X(a, STATIC,   OPTIONAL, FLOAT,    bod,              38)
 #define meshtastic_EnvironmentMetrics_CALLBACK NULL
 #define meshtastic_EnvironmentMetrics_DEFAULT NULL
 
@@ -863,14 +938,14 @@ extern const pb_msgdesc_t meshtastic_SEN5XState_msg;
 #define MESHTASTIC_MESHTASTIC_TELEMETRY_PB_H_MAX_SIZE meshtastic_Telemetry_size
 #define meshtastic_AirQualityMetrics_size        150
 #define meshtastic_DeviceMetrics_size            27
-#define meshtastic_EnvironmentMetrics_size       161
+#define meshtastic_EnvironmentMetrics_size       231
 #define meshtastic_HealthMetrics_size            11
 #define meshtastic_HostMetrics_size              264
 #define meshtastic_LocalStats_size               87
 #define meshtastic_Nau7802Config_size            16
 #define meshtastic_PowerMetrics_size             81
 #define meshtastic_SEN5XState_size               27
-#define meshtastic_Telemetry_size                272
+#define meshtastic_Telemetry_size                342
 #define meshtastic_TrafficManagementStats_size   42
 
 #ifdef __cplusplus

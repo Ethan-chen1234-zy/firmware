@@ -77,7 +77,32 @@ Registers and datatype are per sensor manual. Table below: typical agri/water ma
 
 ---
 
-## 4. IPSO quick reference (partial)
+## 4. EnvCache ↔ `EnvironmentMetrics` (Sprint 1 / D1-5, P1 farm)
+
+| EnvCache | IPSO | Proto field | Field # | Unit / notes |
+|----------|------|-------------|---------|----------------|
+| `ec` | 0xC0, 0x7F | `soil_conductivity` | 24 | mS/cm (`env.ec`; 0x7F uses µS/cm scale in parser) |
+| `soil_ph` (fallback `ph`) | 0xC1, 0xC2 | `soil_ph` | 25 | pH |
+| `salinity` | 0x13 | `salinity` | 26 | mg/L |
+| `digital_input` | 0x00 | `digital_input` | 27 | 0/1 |
+| `digital_output` | 0x01 | `digital_output` | 28 | 0/1 |
+| `nitrogen` | 0x10 | `soil_nitrogen` | 29 | mg/kg, scale 1 |
+| `phosphorus` | 0x11 | `soil_phosphorus` | 30 | mg/kg, scale 1 |
+| `potassium` | 0x12 | `soil_potassium` | 31 | mg/kg, scale 1 |
+| `dissolved_oxygen` | 0x14 | `dissolved_oxygen` | 32 | mg/L, scale 0.01 |
+| `orp` | 0x15 | `orp` | 33 | mV, scale 0.1 (int16) |
+| `cod` | 0x16 | `cod` | 34 | mg/L, scale 1 |
+| `turbidity` | 0x17 | `turbidity` | 35 | NTU, scale 1 |
+| `nitrate` | 0x18 | `nitrate` | 36 | ppm, scale 0.1 |
+| `ammonium` | 0x19 | `ammonium` | 37 | ppm, scale 0.01 |
+| `bod` | 0x1A | `bod` | 38 | mg/L, scale 1 |
+| `moisture` | 0xBC | `soil_moisture` | (existing) | %, scale 0.1 → uint8 0..100 |
+
+Parsed in `onewire_evt()` SDATA/REPORT `switch` (same style as salinity/EC/pH). Exported in `RAKSensorHub::getMetrics()` when cache age &lt; 5 min. Regen: `./bin/regen-protos.sh` (or patch `telemetry.pb.h` on Windows without nanopb bundle).
+
+---
+
+## 5. IPSO quick reference (partial)
 
 | IPSO | Dec | Description |
 |------|-----|-------------|
@@ -96,7 +121,7 @@ Registers and datatype are per sensor manual. Table below: typical agri/water ma
 
 ---
 
-## Summary
+## 6. Summary
 
 RAK2560 SensorHub connects **multiple probes** over **OneWire**; each probe can host **1–2 WisBlock modules**, or **ProbeIO** can expose **RS485, SDI-12, 4–20 mA** for third-party sensors. Firmware embeds Modbus register maps and IPSO definitions for common third-party devices. **Current uplink build does not support user provisioning of new sensors** — that requires the **downlink/config** track.
 

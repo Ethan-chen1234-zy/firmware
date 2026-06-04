@@ -517,6 +517,53 @@ bool EnvironmentTelemetryModule::handleReceivedProtobuf(const meshtastic_MeshPac
 
         LOG_INFO("(Received from %s): radiation=%fµR/h", sender, t->variant.environment_metrics.radiation);
 
+        if (t->variant.environment_metrics.has_soil_conductivity) {
+            LOG_INFO("(Received from %s): soil_conductivity=%f mS/cm", sender,
+                     t->variant.environment_metrics.soil_conductivity);
+        }
+        if (t->variant.environment_metrics.has_soil_ph) {
+            LOG_INFO("(Received from %s): soil_ph=%f", sender, t->variant.environment_metrics.soil_ph);
+        }
+        if (t->variant.environment_metrics.has_salinity) {
+            LOG_INFO("(Received from %s): salinity=%f mg/L", sender, t->variant.environment_metrics.salinity);
+        }
+        if (t->variant.environment_metrics.has_digital_input) {
+            LOG_INFO("(Received from %s): digital_input=%u", sender, (unsigned)t->variant.environment_metrics.digital_input);
+        }
+        if (t->variant.environment_metrics.has_digital_output) {
+            LOG_INFO("(Received from %s): digital_output=%u", sender, (unsigned)t->variant.environment_metrics.digital_output);
+        }
+        if (t->variant.environment_metrics.has_soil_nitrogen) {
+            LOG_INFO("(Received from %s): soil_nitrogen=%f mg/kg", sender, t->variant.environment_metrics.soil_nitrogen);
+        }
+        if (t->variant.environment_metrics.has_soil_phosphorus) {
+            LOG_INFO("(Received from %s): soil_phosphorus=%f mg/kg", sender, t->variant.environment_metrics.soil_phosphorus);
+        }
+        if (t->variant.environment_metrics.has_soil_potassium) {
+            LOG_INFO("(Received from %s): soil_potassium=%f mg/kg", sender, t->variant.environment_metrics.soil_potassium);
+        }
+        if (t->variant.environment_metrics.has_dissolved_oxygen) {
+            LOG_INFO("(Received from %s): dissolved_oxygen=%f mg/L", sender, t->variant.environment_metrics.dissolved_oxygen);
+        }
+        if (t->variant.environment_metrics.has_orp) {
+            LOG_INFO("(Received from %s): orp=%f mV", sender, t->variant.environment_metrics.orp);
+        }
+        if (t->variant.environment_metrics.has_cod) {
+            LOG_INFO("(Received from %s): cod=%f mg/L", sender, t->variant.environment_metrics.cod);
+        }
+        if (t->variant.environment_metrics.has_turbidity) {
+            LOG_INFO("(Received from %s): turbidity=%f NTU", sender, t->variant.environment_metrics.turbidity);
+        }
+        if (t->variant.environment_metrics.has_nitrate) {
+            LOG_INFO("(Received from %s): nitrate=%f ppm", sender, t->variant.environment_metrics.nitrate);
+        }
+        if (t->variant.environment_metrics.has_ammonium) {
+            LOG_INFO("(Received from %s): ammonium=%f ppm", sender, t->variant.environment_metrics.ammonium);
+        }
+        if (t->variant.environment_metrics.has_bod) {
+            LOG_INFO("(Received from %s): bod=%f mg/L", sender, t->variant.environment_metrics.bod);
+        }
+
 #endif
         // release previous packet before occupying a new spot
         if (lastMeasurementPacket != nullptr)
@@ -641,6 +688,52 @@ bool EnvironmentTelemetryModule::sendTelemetry(NodeNum dest, bool phoneOnly)
 
         LOG_INFO("Send: soil_temperature=%f, soil_moisture=%u", m.variant.environment_metrics.soil_temperature,
                  m.variant.environment_metrics.soil_moisture);
+
+        if (m.variant.environment_metrics.has_soil_conductivity) {
+            LOG_INFO("Send: soil_conductivity=%f mS/cm", m.variant.environment_metrics.soil_conductivity);
+        }
+        if (m.variant.environment_metrics.has_soil_ph) {
+            LOG_INFO("Send: soil_ph=%f", m.variant.environment_metrics.soil_ph);
+        }
+        if (m.variant.environment_metrics.has_salinity) {
+            LOG_INFO("Send: salinity=%f mg/L", m.variant.environment_metrics.salinity);
+        }
+        if (m.variant.environment_metrics.has_digital_input) {
+            LOG_INFO("Send: digital_input=%u", (unsigned)m.variant.environment_metrics.digital_input);
+        }
+        if (m.variant.environment_metrics.has_digital_output) {
+            LOG_INFO("Send: digital_output=%u", (unsigned)m.variant.environment_metrics.digital_output);
+        }
+        if (m.variant.environment_metrics.has_soil_nitrogen) {
+            LOG_INFO("Send: soil_nitrogen=%f mg/kg", m.variant.environment_metrics.soil_nitrogen);
+        }
+        if (m.variant.environment_metrics.has_soil_phosphorus) {
+            LOG_INFO("Send: soil_phosphorus=%f mg/kg", m.variant.environment_metrics.soil_phosphorus);
+        }
+        if (m.variant.environment_metrics.has_soil_potassium) {
+            LOG_INFO("Send: soil_potassium=%f mg/kg", m.variant.environment_metrics.soil_potassium);
+        }
+        if (m.variant.environment_metrics.has_dissolved_oxygen) {
+            LOG_INFO("Send: dissolved_oxygen=%f mg/L", m.variant.environment_metrics.dissolved_oxygen);
+        }
+        if (m.variant.environment_metrics.has_orp) {
+            LOG_INFO("Send: orp=%f mV", m.variant.environment_metrics.orp);
+        }
+        if (m.variant.environment_metrics.has_cod) {
+            LOG_INFO("Send: cod=%f mg/L", m.variant.environment_metrics.cod);
+        }
+        if (m.variant.environment_metrics.has_turbidity) {
+            LOG_INFO("Send: turbidity=%f NTU", m.variant.environment_metrics.turbidity);
+        }
+        if (m.variant.environment_metrics.has_nitrate) {
+            LOG_INFO("Send: nitrate=%f ppm", m.variant.environment_metrics.nitrate);
+        }
+        if (m.variant.environment_metrics.has_ammonium) {
+            LOG_INFO("Send: ammonium=%f ppm", m.variant.environment_metrics.ammonium);
+        }
+        if (m.variant.environment_metrics.has_bod) {
+            LOG_INFO("Send: bod=%f mg/L", m.variant.environment_metrics.bod);
+        }
 
         meshtastic_MeshPacket *p = allocDataProtobuf(m);
         p->to = dest;

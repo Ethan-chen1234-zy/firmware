@@ -1494,6 +1494,147 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("EC: %.3f (mS/cm units)", env.ec.value);
             break;
         }
+        case RAK_IPSO_NITROGEN: {  // 0x10, 1 mg/kg per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.nitrogen.valid) {
+                LOG_INFO("Nitrogen: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.nitrogen, (float)raw, millis());
+            LOG_INFO("Nitrogen: %.0f mg/kg", env.nitrogen.value);
+            break;
+        }
+        case RAK_IPSO_PHOSPHORUS: {  // 0x11, 1 mg/kg per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.phosphorus.valid) {
+                LOG_INFO("Phosphorus: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.phosphorus, (float)raw, millis());
+            LOG_INFO("Phosphorus: %.0f mg/kg", env.phosphorus.value);
+            break;
+        }
+        case RAK_IPSO_POTASSIUM: {  // 0x12, 1 mg/kg per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.potassium.valid) {
+                LOG_INFO("Potassium: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.potassium, (float)raw, millis());
+            LOG_INFO("Potassium: %.0f mg/kg", env.potassium.value);
+            break;
+        }
+        case RAK_IPSO_DISS_OXYGEN: {  // 0x14, 0.01 mg/L per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.dissolved_oxygen.valid) {
+                LOG_INFO("Dissolved oxygen: raw=0 (skip overwrite)");
+                break;
+            }
+            float dO = raw * 0.01f;
+            setScalar(env.dissolved_oxygen, dO, millis());
+            LOG_INFO("Dissolved oxygen: %.2f mg/L", dO);
+            break;
+        }
+        case RAK_IPSO_ORP: {  // 0x15, 0.1 mV per bit
+            if (len < 3)
+                break;
+            int16_t raw = (int16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.orp.valid) {
+                LOG_INFO("ORP: raw=0 (skip overwrite)");
+                break;
+            }
+            float orp = raw * 0.1f;
+            setScalar(env.orp, orp, millis());
+            LOG_INFO("ORP: %.1f mV", orp);
+            break;
+        }
+        case RAK_IPSO_COD: {  // 0x16, 1 mg/L per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.cod.valid) {
+                LOG_INFO("COD: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.cod, (float)raw, millis());
+            LOG_INFO("COD: %.0f mg/L", env.cod.value);
+            break;
+        }
+        case RAK_IPSO_TURBIDITY: {  // 0x17, 1 NTU per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.turbidity.valid) {
+                LOG_INFO("Turbidity: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.turbidity, (float)raw, millis());
+            LOG_INFO("Turbidity: %.0f NTU", env.turbidity.value);
+            break;
+        }
+        case RAK_IPSO_NO3: {  // 0x18, 0.1 ppm per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.nitrate.valid) {
+                LOG_INFO("Nitrate: raw=0 (skip overwrite)");
+                break;
+            }
+            float nitrate = raw * 0.1f;
+            setScalar(env.nitrate, nitrate, millis());
+            LOG_INFO("Nitrate: %.1f ppm", nitrate);
+            break;
+        }
+        case RAK_IPSO_NH4PLUS: {  // 0x19, 0.01 ppm per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.ammonium.valid) {
+                LOG_INFO("Ammonium: raw=0 (skip overwrite)");
+                break;
+            }
+            float ammonium = raw * 0.01f;
+            setScalar(env.ammonium, ammonium, millis());
+            LOG_INFO("Ammonium: %.2f ppm", ammonium);
+            break;
+        }
+        case RAK_IPSO_BOD: {  // 0x1A, 1 mg/L per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.bod.valid) {
+                LOG_INFO("BOD: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.bod, (float)raw, millis());
+            LOG_INFO("BOD: %.0f mg/L", env.bod.value);
+            break;
+        }
+        case RAK_IPSO_MOISTURE: {  // 0xBC, 0.1 % per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.moisture.valid) {
+                LOG_INFO("Soil moisture: raw=0 (skip overwrite)");
+                break;
+            }
+            float moisture = raw * 0.1f;
+            if (moisture < 0.0f || moisture > 100.0f) {
+                LOG_INFO("Ignore soil moisture out of range: %.1f %%", moisture);
+                break;
+            }
+            setScalar(env.moisture, moisture, millis());
+            LOG_INFO("Soil moisture: %.1f %%", moisture);
+            break;
+        }
         default:
             if (len >= 2) {
                 logIpoRawHex("SDATA unhandled", msg[0], msg, len);
@@ -1765,6 +1906,147 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             }
             setScalar(env.ec, raw / 1000.0f, millis());
             LOG_INFO("EC: %.3f (mS/cm units)", env.ec.value);
+            break;
+        }
+        case RAK_IPSO_NITROGEN: {  // 0x10, 1 mg/kg per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.nitrogen.valid) {
+                LOG_INFO("Nitrogen: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.nitrogen, (float)raw, millis());
+            LOG_INFO("Nitrogen: %.0f mg/kg", env.nitrogen.value);
+            break;
+        }
+        case RAK_IPSO_PHOSPHORUS: {  // 0x11, 1 mg/kg per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.phosphorus.valid) {
+                LOG_INFO("Phosphorus: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.phosphorus, (float)raw, millis());
+            LOG_INFO("Phosphorus: %.0f mg/kg", env.phosphorus.value);
+            break;
+        }
+        case RAK_IPSO_POTASSIUM: {  // 0x12, 1 mg/kg per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.potassium.valid) {
+                LOG_INFO("Potassium: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.potassium, (float)raw, millis());
+            LOG_INFO("Potassium: %.0f mg/kg", env.potassium.value);
+            break;
+        }
+        case RAK_IPSO_DISS_OXYGEN: {  // 0x14, 0.01 mg/L per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.dissolved_oxygen.valid) {
+                LOG_INFO("Dissolved oxygen: raw=0 (skip overwrite)");
+                break;
+            }
+            float dO = raw * 0.01f;
+            setScalar(env.dissolved_oxygen, dO, millis());
+            LOG_INFO("Dissolved oxygen: %.2f mg/L", dO);
+            break;
+        }
+        case RAK_IPSO_ORP: {  // 0x15, 0.1 mV per bit
+            if (len < 3)
+                break;
+            int16_t raw = (int16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.orp.valid) {
+                LOG_INFO("ORP: raw=0 (skip overwrite)");
+                break;
+            }
+            float orp = raw * 0.1f;
+            setScalar(env.orp, orp, millis());
+            LOG_INFO("ORP: %.1f mV", orp);
+            break;
+        }
+        case RAK_IPSO_COD: {  // 0x16, 1 mg/L per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.cod.valid) {
+                LOG_INFO("COD: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.cod, (float)raw, millis());
+            LOG_INFO("COD: %.0f mg/L", env.cod.value);
+            break;
+        }
+        case RAK_IPSO_TURBIDITY: {  // 0x17, 1 NTU per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.turbidity.valid) {
+                LOG_INFO("Turbidity: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.turbidity, (float)raw, millis());
+            LOG_INFO("Turbidity: %.0f NTU", env.turbidity.value);
+            break;
+        }
+        case RAK_IPSO_NO3: {  // 0x18, 0.1 ppm per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.nitrate.valid) {
+                LOG_INFO("Nitrate: raw=0 (skip overwrite)");
+                break;
+            }
+            float nitrate = raw * 0.1f;
+            setScalar(env.nitrate, nitrate, millis());
+            LOG_INFO("Nitrate: %.1f ppm", nitrate);
+            break;
+        }
+        case RAK_IPSO_NH4PLUS: {  // 0x19, 0.01 ppm per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.ammonium.valid) {
+                LOG_INFO("Ammonium: raw=0 (skip overwrite)");
+                break;
+            }
+            float ammonium = raw * 0.01f;
+            setScalar(env.ammonium, ammonium, millis());
+            LOG_INFO("Ammonium: %.2f ppm", ammonium);
+            break;
+        }
+        case RAK_IPSO_BOD: {  // 0x1A, 1 mg/L per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.bod.valid) {
+                LOG_INFO("BOD: raw=0 (skip overwrite)");
+                break;
+            }
+            setScalar(env.bod, (float)raw, millis());
+            LOG_INFO("BOD: %.0f mg/L", env.bod.value);
+            break;
+        }
+        case RAK_IPSO_MOISTURE: {  // 0xBC, 0.1 % per bit
+            if (len < 3)
+                break;
+            uint16_t raw = (uint16_t)((msg[2] << 8) + msg[1]);
+            if (raw == 0 && env.moisture.valid) {
+                LOG_INFO("Soil moisture: raw=0 (skip overwrite)");
+                break;
+            }
+            float moisture = raw * 0.1f;
+            if (moisture < 0.0f || moisture > 100.0f) {
+                LOG_INFO("Ignore soil moisture out of range: %.1f %%", moisture);
+                break;
+            }
+            setScalar(env.moisture, moisture, millis());
+            LOG_INFO("Soil moisture: %.1f %%", moisture);
             break;
         }
         default:
@@ -2471,11 +2753,24 @@ static int32_t onewirePollHandle()
     // Only allow one outstanding request at a time; otherwise TX/RX overlap on half-duplex
     // can corrupt frames and trigger checksum errors.
     if (awaiting_rsp) {
-        // If we don't get a response, fail open and keep polling.
-        if ((now - awaiting_rsp_since) > 2000) {
+        // During IOC downlink wait longer for IOA_RSP; do not rotate get.data PID on timeout.
+        const uint32_t rsp_timeout_ms =
+#if RAK_SENSORHUB_DOWNLINK_POC
+            (downlink_poc_pending || downlink_poc_wait_rejoin) ? 5000u :
+#endif
+                                                               2000u;
+        if ((now - awaiting_rsp_since) > rsp_timeout_ms) {
             awaiting_rsp = false;
             last_err_time = now;
-            advanceDataPollPid();
+#if RAK_SENSORHUB_DOWNLINK_POC
+            if (downlink_poc_pending || downlink_poc_wait_rejoin) {
+                LOG_WARN("RAKSensorHub: IOC/downlink RSP timeout (%ums, phase=%u step=%u)",
+                         (unsigned)rsp_timeout_ms, (unsigned)downlink_poc_phase, (unsigned)downlink_poc_step);
+            } else
+#endif
+            {
+                advanceDataPollPid();
+            }
         } else {
             return 50;
         }
@@ -2710,6 +3005,86 @@ bool RAKSensorHub::getMetrics(meshtastic_Telemetry *measurement)
     if (scalarFresh(env.radiation, now, maxAgeMs)) {
         measurement->variant.environment_metrics.has_radiation = true;
         measurement->variant.environment_metrics.radiation = env.radiation.value;   // Radiation in W/m² from RAK environmental sensor (IPSO 0xC3 PYRANOMETER).
+        any = true;
+    }
+    if (scalarFresh(env.ec, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_soil_conductivity = true;
+        measurement->variant.environment_metrics.soil_conductivity = env.ec.value;
+        any = true;
+    }
+    if (scalarFresh(env.soil_ph, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_soil_ph = true;
+        measurement->variant.environment_metrics.soil_ph = env.soil_ph.value;
+        any = true;
+    } else if (scalarFresh(env.ph, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_soil_ph = true;
+        measurement->variant.environment_metrics.soil_ph = env.ph.value;
+        any = true;
+    }
+    if (scalarFresh(env.salinity, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_salinity = true;
+        measurement->variant.environment_metrics.salinity = env.salinity.value;
+        any = true;
+    }
+    if (scalarFresh(env.digital_input, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_digital_input = true;
+        measurement->variant.environment_metrics.digital_input = (uint32_t)(env.digital_input.value > 0.5f ? 1u : 0u);
+        any = true;
+    }
+    if (scalarFresh(env.digital_output, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_digital_output = true;
+        measurement->variant.environment_metrics.digital_output =
+            (uint32_t)(env.digital_output.value > 0.5f ? 1u : 0u);
+        any = true;
+    }
+    if (scalarFresh(env.nitrogen, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_soil_nitrogen = true;
+        measurement->variant.environment_metrics.soil_nitrogen = env.nitrogen.value;
+        any = true;
+    }
+    if (scalarFresh(env.phosphorus, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_soil_phosphorus = true;
+        measurement->variant.environment_metrics.soil_phosphorus = env.phosphorus.value;
+        any = true;
+    }
+    if (scalarFresh(env.potassium, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_soil_potassium = true;
+        measurement->variant.environment_metrics.soil_potassium = env.potassium.value;
+        any = true;
+    }
+    if (scalarFresh(env.dissolved_oxygen, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_dissolved_oxygen = true;
+        measurement->variant.environment_metrics.dissolved_oxygen = env.dissolved_oxygen.value;
+        any = true;
+    }
+    if (scalarFresh(env.orp, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_orp = true;
+        measurement->variant.environment_metrics.orp = env.orp.value;
+        any = true;
+    }
+    if (scalarFresh(env.cod, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_cod = true;
+        measurement->variant.environment_metrics.cod = env.cod.value;
+        any = true;
+    }
+    if (scalarFresh(env.turbidity, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_turbidity = true;
+        measurement->variant.environment_metrics.turbidity = env.turbidity.value;
+        any = true;
+    }
+    if (scalarFresh(env.nitrate, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_nitrate = true;
+        measurement->variant.environment_metrics.nitrate = env.nitrate.value;
+        any = true;
+    }
+    if (scalarFresh(env.ammonium, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_ammonium = true;
+        measurement->variant.environment_metrics.ammonium = env.ammonium.value;
+        any = true;
+    }
+    if (scalarFresh(env.bod, now, maxAgeMs)) {
+        measurement->variant.environment_metrics.has_bod = true;
+        measurement->variant.environment_metrics.bod = env.bod.value;
         any = true;
     }
 
