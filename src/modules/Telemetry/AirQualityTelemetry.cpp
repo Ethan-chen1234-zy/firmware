@@ -118,10 +118,10 @@ int32_t AirQualityTelemetryModule::runOnce()
         }
 
         // Wake up the sensors that need it
-        LOG_INFO("Waking up sensors...");
         uint32_t lastTelemetry =
             transmitHistory ? transmitHistory->getLastSentToMeshMillis(TX_HISTORY_KEY_AIR_QUALITY_TELEMETRY) : 0;
         for (TelemetrySensor *sensor : sensors) {
+            LOG_DEBUG("Checking if %s needs to wake up", sensor->sensorName);
             if (!sensor->canSleep()) {
                 LOG_DEBUG("%s sensor doesn't have sleep feature. Skipping", sensor->sensorName);
             } else if (((lastTelemetry == 0) || !Throttle::isWithinTimespanMs(lastTelemetry - sensor->wakeUpTimeMs(),
@@ -162,8 +162,8 @@ int32_t AirQualityTelemetryModule::runOnce()
         }
 
         // Send to sleep sensors that consume power
-        LOG_DEBUG("Sending sensors to sleep");
         for (TelemetrySensor *sensor : sensors) {
+            LOG_DEBUG("Checking if %s can be sent to sleep", sensor->sensorName);
             if (sensor->isActive() && sensor->canSleep()) {
                 if (sensor->wakeUpTimeMs() <
                     (int32_t)Default::getConfiguredOrDefaultMsScaled(moduleConfig.telemetry.air_quality_interval,
@@ -217,6 +217,11 @@ void AirQualityTelemetryModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiSta
         display->drawString(x, currentY, "No Telemetry");
         return;
     }
+
+    // Same String(float) stack-overflow guard as EnvironmentTelemetry: form_formaldehyde is the only
+    // float rendered here, and its raw bytes are unvalidated on decode.
+    telemetry.variant.air_quality_metrics.form_formaldehyde =
+        UnitConversions::displaySafeFloat(telemetry.variant.air_quality_metrics.form_formaldehyde);
 
     const auto &m = telemetry.variant.air_quality_metrics;
 
@@ -429,20 +434,6 @@ bool AirQualityTelemetryModule::sendTelemetry(NodeNum dest, bool phoneOnly)
         } else {
             LOG_INFO("Sending packet to mesh");
             service->sendToMesh(p, RX_SRC_LOCAL, true);
-
-            if (config.device.role == meshtastic_Config_DeviceConfig_Role_SENSOR && config.power.is_power_saving) {
-                meshtastic_ClientNotification *notification = clientNotificationPool.allocZeroed();
-                notification->level = meshtastic_LogRecord_Level_INFO;
-                notification->time = getValidTime(RTCQualityFromNet);
-                sprintf(notification->message, "Sending telemetry and sleeping for %us interval in a moment",
-                        Default::getConfiguredOrDefaultMs(moduleConfig.telemetry.air_quality_interval,
-                                                          default_telemetry_broadcast_interval_secs) /
-                            1000U);
-                service->sendClientNotification(notification);
-                sleepOnNextExecution = true;
-                LOG_DEBUG("Start next execution in 5s, then sleep");
-                setIntervalFromNow(FIVE_SECONDS_MS);
-            }
 
             if (config.device.role == meshtastic_Config_DeviceConfig_Role_SENSOR && config.power.is_power_saving) {
                 meshtastic_ClientNotification *notification = clientNotificationPool.allocZeroed();

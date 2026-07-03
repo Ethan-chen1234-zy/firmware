@@ -82,6 +82,9 @@ static const uint32_t LISTEN_WINDOW_DURATION_MS = 3000;   // 3 s no TX
 static uint32_t last_listen_schedule = 0;
 static uint32_t listen_window_until = 0;
 
+// ProbeIO core-1.2.27: DI sensor slot base (snsr_id = 15 + ch - 1 for IOC_DI ch>=1).
+static constexpr uint8_t RAKHUB_PROBE_DI_SNSR_BASE = 15;
+
 #if RAK_SENSORHUB_DOWNLINK_POC
 static bool downlink_poc_pending = false;
 static bool downlink_poc_done = false;
@@ -685,9 +688,6 @@ static const char *iocFuncName(uint8_t funcode)
         return "UNKNOWN";
     }
 }
-
-// ProbeIO core-1.2.27: DI sensor slot base (snsr_id = 15 + ch - 1 for IOC_DI ch>=1).
-static constexpr uint8_t RAKHUB_PROBE_DI_SNSR_BASE = 15;
 
 static bool downlinkDecodeNeedsPostReboot(uint8_t iface)
 {

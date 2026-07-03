@@ -26,6 +26,11 @@ enum MenuAction {
     NEXT_TILE,
     TOGGLE_BACKLIGHT,
     TOGGLE_GPS,
+    TOGGLE_SMART_POSITION,
+    SET_POSITION_BROADCAST_INTERVAL,
+    SET_SMART_BROADCAST_INTERVAL,
+    SET_SMART_BROADCAST_DISTANCE,
+    SET_GPS_UPDATE_INTERVAL,
     ENABLE_BLUETOOTH,
     TOGGLE_APPLET,
     TOGGLE_AUTOSHOW_APPLET,
@@ -69,6 +74,7 @@ enum MenuAction {
     SET_REGION_ITU1_2M,
     SET_REGION_ITU2_2M,
     SET_REGION_ITU3_2M,
+    SET_REGION_ITU2_125CM,
     // Device Roles
     SET_ROLE_CLIENT,
     SET_ROLE_CLIENT_MUTE,
@@ -128,6 +134,11 @@ enum MenuAction {
     // Administration
     RESET_NODEDB_ALL,
     RESET_NODEDB_KEEP_FAVORITES,
+    WIPE_MESSAGES_ALL,
+    // Map zoom (MapApplet and FavoritesMapApplet)
+    MAP_ZOOM_IN,
+    MAP_ZOOM_OUT,
+    MAP_ZOOM_RESET,
 };
 
 } // namespace NicheGraphics::InkHUD
