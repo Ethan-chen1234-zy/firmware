@@ -3,7 +3,7 @@
 **入口文档**：开发者请先阅读仓库根目录 **`README(Add_RAKSensorHub).md`**（主文件索引、构建宏、各能力用法）；本文件仅保留 **Git 提交级** 变更表。
 
 **分支**：`feature/add_RAKSensorHub`  
-**生成方式**：根据 `git log` 整理；未包含工作区内尚未提交的改动。
+**生成方式**：根据 `git log` 整理；§〇-B 为 2026-08-17 工作区未提交记录（RAK9154 GE + RK300-03 GE）。
 
 ---
 
@@ -12,6 +12,59 @@
 | Tag | Commit | 说明 |
 |-----|--------|------|
 | `v2.7.21-raksensorhub-poc-uplink` | `bc893370c` | **上行 POC**：`rak2560` 构建产物与 SHA256 见 `releases/uplink-poc/v2.7.21-raksensorhub-poc-uplink/README-RELEASE.md`；发布流程见 `doc/RAKSensorHub_Release_Uplink_POC.md`。UF2 通过 **GitHub Release 附件**分发（`releases/**/*.uf2` 已 `.gitignore`）。 |
+
+---
+
+## 〇-B、工作区未提交（2026-08-17，GE 通用 RS485）
+
+共用基础设施（USB `RAKHUB`、`DOWNLINK_AUTO=0`、`rakhubUsbFeedByte`）见下表。两条传感器都是 ProbeIO **GE** 轮询表，不是 core 内置驱动。
+
+### 1. RAK9154（battery_lite）
+
+验收：`bin/battery_lite_core-1.2.27.json` → 从站 **`0x6E`**，四路 `IO_ADDPOLL`：
+
+| 任务 | hex | IPSO | 含义 | Hub 处理 |
+|------|-----|------|------|----------|
+| 1 | `6e0360000001` | 186 (`0xBA`) dtype=6 scale=0.01 | 电压 | EnvironmentMetrics，日志 `Battery voltage: 12.88 V` / `10.78 V` |
+| 2 | `6e0360010001` | 185 (`0xB9`) dtype=4 scale=0.01 | 电流 | EnvironmentMetrics |
+| 3 | `6e0360020001` | 184 (`0xB8`) dtype=6 scale=1 | SOC | 本地 `HubPower.percent`（HAS_RAKHUB 不走 DeviceMetrics） |
+| 4 | `6e0360090001` | 103 (`0x67`) dtype=4 scale=1 | 温度 | EnvironmentMetrics，约 `26°C` |
+
+注意：这与 `app_start.c` 里 `dtype=='RS'` 的 **内置 `do_RAK9154_*`** 不是同一条路径。JSON 是把 9154 当通用 Modbus 设备配进 GE。`IO_PSM` / `SNSR_CONF` / `PRB_DEL` 由脚本忽略，Hub APPLY 只发 `IO_CFG` + `IO_ADDPOLLEX` + `IO_ENABLEPOLL`。9154 本体不用再重启；ProbeIO 软重启是 APPLY 清表流程的一部分。
+
+### 2. RK300-03 CO2
+
+验收：`bin/rk300_03_core-1.2.27.json` → 从站 **`01`**，`010300000001`，IPSO 125 (`0x7D`) → `7D D9 03` = **985 ppm**（小端）。走 AirQuality，不是 Environment。从站 `02` 读不到。
+
+### 应保留（有用）
+
+| 文件 | 改动 | 为什么留 |
+|------|------|----------|
+| `variants/nrf52840/rak2560/platformio.ini` | `DOWNLINK_POC=1` `TEMPLATE=0` **`DOWNLINK_AUTO=0`** `USB_PROFILE=1` | Hub 重启不再自动 clear ProbeIO EEPROM；配置只走 USB `RAKHUB APPLY` |
+| `RAKSensorHub.cpp` `scheduleDownlinkPoc()` | `AUTO=0` 时跳过 join 自动调度 | 与上配套；APPLY 的 clear→reboot→config 仍会走 |
+| `StreamAPI.cpp` + `RAKSensorHubProfile.h` | 非 protobuf START1 字节转 `rakhubUsbFeedByte()` | SerialConsole 原先吃掉 `RAKHUB` 行，JSON APPLY 经常只写到 slot 0 |
+| `RAKSensorHub.cpp` USB | 抽出 `rakhubUsbFeedByte` | 给 StreamAPI 喂字节 |
+| `bin/rakhub_usb_poc.py` | 单任务 JSON 也发 `slot=0` | 省略 slot 会 auto-append；上次 `DEV_ADDR=02` 会变成 `tasks=2` |
+| `bin/rk300_03_core-1.2.27.json` | GE 模板，从站 `01`，IPSO 125 | RK300-03 已验证 985 ppm |
+| `bin/battery_lite_core-1.2.27.json` | GE 模板，从站 `0x6E`，IPSO 186/185/184/103 | RAK9154 已验证电压/SOC/温度 |
+| `parseCo2Ipso()` | SDATA/REPORT 共用；数值变化才 `LOG_INFO` | 985 ppm 验收点；避免 get.data 每秒刷屏 |
+| REQ/RSP、Status 改 `LOG_DEBUG`；CO2 不再打 `+EVT:IPSO[7d]` | 降噪 | 与「取消无关日志」一致 |
+
+### 调试过程中已删掉（不要再加回来）
+
+- 每帧 `SDATA IPSO[7d] raw(len=3): 7D xx xx`
+- 空槽 `CO2 … raw=0 (ProbeIO empty …)`
+- `--subst DEV_ADDR=02` 试验（传感器从站是 **01**）
+
+### 可选 / 偏防御（RK300 实际用不上）
+
+- `parseCo2Ipso` 大端回退：本次成功帧是小端 `D9 03`=985，BE 分支未触发。可留作其它 ProbeIO 打包容错。
+
+### 操作结论（不是代码）
+
+- 9154 与 RK300-03 在 core-1.2.27 都走 ProbeIO **GE** + EEPROM 轮询，不是 `app_start.c` 内置 `do_RAK9154_*` / 无 RK300 驱动。
+- APPLY 先清再写；写完等 `queued all` 后再等一个 `period`（60s）。
+- Hub 闪存里的 USB override 掉电丢失；ProbeIO 任务在 EEPROM，`AUTO=0` 时 Hub 重启不会擦。
 
 ---
 
@@ -78,5 +131,6 @@ git log --format="%h %ad %s" --date=short -30
 
 | 日期 | 说明 |
 |------|------|
+| 2026-08-17 | 未提交：RAK9154 GE + RK300-03 GE 验收；`DOWNLINK_AUTO`；USB `rakhubUsbFeedByte`。见 §〇-B。 |
 | 2026-05-13 | 增加 USB POC 提交占位行、§ 三 条目 7。 |
 | 2026-05-12 | 初稿；入口 README 指向本文件。 |

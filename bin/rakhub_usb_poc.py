@@ -472,9 +472,10 @@ def wistool_template_to_rakhub(
             raise ValueError(
                 f"Interface RS485 but no parsable ATC+IO_ADDPOLL=...:RS485:... for {sensor!r}"
             )
+        # Always emit slot=N. slot=0 clears Hub RAM leftovers from a previous JSON (e.g. DEV_ADDR=02).
+        # Omitting slot= auto-appends (slot=1, tasks=2) and APPLY would send the old command too.
         for i, fields in enumerate(tasks):
-            slot = i if len(tasks) > 1 else None
-            rakhub.append(build_rs485_line(baud, databit, stop, parity, fields, slot=slot))
+            rakhub.append(build_rs485_line(baud, databit, stop, parity, fields, slot=i))
         return rakhub, notes
 
     if iface == "AI":

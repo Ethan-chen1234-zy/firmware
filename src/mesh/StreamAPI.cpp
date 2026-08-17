@@ -4,6 +4,10 @@
 #include "Throttle.h"
 #include "concurrency/LockGuard.h"
 #include "configuration.h"
+#if defined(HAS_RAKHUB) && defined(RAK_SENSORHUB_USB_PROFILE) && RAK_SENSORHUB_USB_PROFILE &&                               \
+    defined(RAK_SENSORHUB_DOWNLINK_POC) && RAK_SENSORHUB_DOWNLINK_POC
+#include "modules/Telemetry/Sensor/RAKSensorHubProfile.h"
+#endif
 
 #define START1 0x94
 #define START2 0xc3
@@ -78,8 +82,13 @@ int32_t StreamAPI::handleRecStream(const char *buf, uint16_t bufLen)
         // console->printf("rxPtr %d ptr=%d c=0x%x\n", rxPtr, ptr, c);
 
         if (ptr == 0) { // looking for START1
-            if (c != START1)
-                rxPtr = 0;     // failed to find framing
+            if (c != START1) {
+                rxPtr = 0; // failed to find framing
+#if defined(HAS_RAKHUB) && defined(RAK_SENSORHUB_USB_PROFILE) && RAK_SENSORHUB_USB_PROFILE &&                               \
+    defined(RAK_SENSORHUB_DOWNLINK_POC) && RAK_SENSORHUB_DOWNLINK_POC
+                rakhubUsbFeedByte(c);
+#endif
+            }
         } else if (ptr == 1) { // looking for START2
             if (c != START2)
                 rxPtr = 0;                             // failed to find framing
@@ -134,8 +143,13 @@ int32_t StreamAPI::readStream()
             // console->printf("rxPtr %d ptr=%d c=0x%x\n", rxPtr, ptr, c);
 
             if (ptr == 0) { // looking for START1
-                if (c != START1)
-                    rxPtr = 0;     // failed to find framing
+                if (c != START1) {
+                    rxPtr = 0; // failed to find framing
+#if defined(HAS_RAKHUB) && defined(RAK_SENSORHUB_USB_PROFILE) && RAK_SENSORHUB_USB_PROFILE &&                               \
+    defined(RAK_SENSORHUB_DOWNLINK_POC) && RAK_SENSORHUB_DOWNLINK_POC
+                    rakhubUsbFeedByte(c);
+#endif
+                }
             } else if (ptr == 1) { // looking for START2
                 if (c != START2)
                     rxPtr = 0;                             // failed to find framing

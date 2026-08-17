@@ -1,0 +1,14 @@
+{
+  "SensorName": "RK300-03",
+  "TemplateVersion": "1",
+  "ProbeioVersion": "1.2.27",
+  "Interface": "RS485",
+  "Content": [
+    "ATC+IO_PSM={PRB_ID}:8:0:0:0:0",
+    "ATC+IO_RMPOLL={PRB_ID}:rs485:0",
+    "ATC+IO_CFG={PRB_ID}:rs485:9600:8:1:0",
+    "ATC+SNSR_CONF={PRB_ID}:8:{SNSR_INTV}:2",
+    "ATC+IO_ADDPOLL={PRB_ID}:rs485:{TASK_ID1}:{DEV_ADDR}0300000001:60:1000:2:6:1:125:{PROFILE_NAME}",
+    "ATC+PRB_DEL={PRB_ID}"
+  ]
+}

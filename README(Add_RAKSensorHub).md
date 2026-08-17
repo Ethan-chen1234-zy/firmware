@@ -75,6 +75,7 @@ Edit **`variants/nrf52840/rak2560/platformio.ini`** under `[env:rak2560] build_f
 | `HAS_RAKHUB` | `1` | Builds RAK SensorHub path (uses OneWireSerial). **Mutually exclusive** with `HAS_RAKPROT` (see comment in `platformio.ini`). |
 | `RAK_SENSORHUB_DOWNLINK_POC` | `1` | Enables Hub → ProbeIO **IOC downlink POC** state machine (`IO_CFG`, `IO_ADDPOLLEX`, …). Set `0` for uplink-only experiments. |
 | `RAK_SENSORHUB_DOWNLINK_TEMPLATE` | `0`–`4` | Selects **built-in** `DownlinkSensorTemplate` when USB override is **not** active. Values (must match `RAKSensorHub.cpp`): **`0`** = clear-only (no `IO_CFG` / `IO_ADDPOLLEX` after clear); **`1`** = JXBS-3001-EC RS485 template; **`2`** = SDSIN soil 4-in-1; **`3`** = JXBS-4001-pH; **`4`** = AIC 4–20 mA (`IO_DECODE`). |
+| `RAK_SENSORHUB_DOWNLINK_AUTO` | `0` / `1` | Default **1**. **`0`** = do not auto-schedule downlink on ProbeIO join (Hub reboot will not clear ProbeIO EEPROM). USB `RAKHUB APPLY` still runs clear+config. |
 | `RAK_SENSORHUB_USB_PROFILE` | `0` / `1` | `1` = USB CDC **`RAKHUB …`** text lines + `rakhubNotifyProfileFileUploaded` stub; requires **`RAK_SENSORHUB_DOWNLINK_POC=1`**. **Disconnect** Meshtastic protobuf clients from that CDC port while typing commands. |
 
 **USB vs compile template:** After flashing, `RAKHUB COMPILE` restores compile-time `RAK_SENSORHUB_DOWNLINK_TEMPLATE`; `RAKHUB RS485` / `RAKHUB AIC` / `RAKHUB BUILTIN` store overrides until `RAKHUB APPLY`. See `doc/README_RAKSensorHub_Downlink_POC.*.md`.

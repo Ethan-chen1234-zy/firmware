@@ -1,0 +1,17 @@
+{
+  "SensorName": "battery_lite",
+  "TemplateVersion": "1",
+  "ProbeioVersion": "1.2.27",
+  "Interface": "RS485",
+  "Content": [
+    "ATC+IO_PSM={PRB_ID}:9:1:5000:0",
+    "ATC+IO_RMPOLL={PRB_ID}:rs485:0",
+    "ATC+IO_CFG={PRB_ID}:rs485:9600:8:1:0",
+    "ATC+SNSR_CONF={PRB_ID}:8:{SNSR_INTV}:2",
+    "ATC+IO_ADDPOLL={PRB_ID}:rs485:1:6e0360000001:60:1000:2:6:0.01:186:{PROFILE_NAME}",
+    "ATC+IO_ADDPOLL={PRB_ID}:rs485:2:6e0360010001:60:1000:2:4:0.01:185:{PROFILE_NAME}",
+    "ATC+IO_ADDPOLL={PRB_ID}:rs485:3:6e0360020001:60:1000:2:6:1:184:{PROFILE_NAME}",
+    "ATC+IO_ADDPOLL={PRB_ID}:rs485:4:6e0360090001:60:1000:2:4:1:103:{PROFILE_NAME}",
+    "ATC+PRB_DEL={PRB_ID}"
+  ]
+}

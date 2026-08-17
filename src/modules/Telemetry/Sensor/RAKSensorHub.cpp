@@ -26,6 +26,9 @@ using namespace concurrency;
 #ifndef RAK_SENSORHUB_USB_PROFILE
 #define RAK_SENSORHUB_USB_PROFILE 0
 #endif
+#ifndef RAK_SENSORHUB_DOWNLINK_AUTO
+#define RAK_SENSORHUB_DOWNLINK_AUTO 1 // 0 = no boot/hot-plug schedule; USB RAKHUB APPLY still runs downlink
+#endif
 
 /** Construct RAK 1-Wire sensor hub (type SENSOR_UNSET, name "RAKSensorHub"); actual init in runOnce(). */
 RAKSensorHub::RAKSensorHub() : TelemetrySensor(meshtastic_TelemetrySensorType_SENSOR_UNSET, "RAKSensorHub") {}
@@ -705,6 +708,11 @@ static void scheduleDownlinkPoc(uint8_t pid)
 {
     if (pid == 0 || pid == PID_MASTER || downlink_poc_pending)
         return;
+#if !RAK_SENSORHUB_DOWNLINK_AUTO
+    // Manual APPLY only: skip auto schedule on probe join; still continue after APPLY clear+reboot.
+    if (!downlink_poc_wait_rejoin)
+        return;
+#endif
     // Hot-plug +ADD:PID must not restart a finished USB APPLY downlink (clears RS485/DI in EEPROM).
     if (downlink_poc_done && !downlink_poc_wait_rejoin)
         return;
@@ -1009,6 +1017,27 @@ static bool parseDigitalIpso(uint8_t ipso, uint8_t *msg, uint16_t len, const cha
     return false;
 }
 
+/** IPSO 0x7D is 2-byte unsigned ppm. ProbeIO may pack LE or BE. */
+static bool parseCo2Ipso(uint8_t *msg, uint16_t len, const char *via)
+{
+    (void)via;
+    if (len < 3)
+        return false;
+    const uint16_t le = (uint16_t)msg[1] | ((uint16_t)msg[2] << 8);
+    const uint16_t be = ((uint16_t)msg[1] << 8) | (uint16_t)msg[2];
+    uint16_t raw = le;
+    if ((le == 0 || le > 5000) && be > 0 && be <= 5000)
+        raw = be;
+    if (raw == 0 || raw > 5000)
+        return false;
+    const float co2 = (float)raw;
+    const bool changed = !env.co2.valid || (uint16_t)(env.co2.value + 0.5f) != raw;
+    setScalar(env.co2, co2, millis());
+    if (changed)
+        LOG_INFO("CO2 sensor: %.0f ppm", co2);
+    return true;
+}
+
 /** Return true if scalar reading is within validity window: valid, non-zero timestamp, and not older than maxAgeMs. */
 static inline bool scalarFresh(const ScalarReading &r, uint32_t nowMs, uint32_t maxAgeMs)
 {
@@ -1126,10 +1155,10 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
 {
     switch (eid) {
     case SNHUBAPI_EVT_RECV_REQ:
-        LOG_INFO("+EVT:PID[%02x],REQ", pid);
+        LOG_DEBUG("+EVT:PID[%02x],REQ", pid);
         break;
     case SNHUBAPI_EVT_RECV_RSP:
-        LOG_INFO("+EVT:PID[%02x],RSP", pid);
+        LOG_DEBUG("+EVT:PID[%02x],RSP", pid);
         if (last_sent_pid_valid && pid == last_sent_pid && pid != PID_MASTER && provision_list.count(pid) == 0) {
             provision_list.insert(pid);
             data_poll_pid = pid;
@@ -1218,7 +1247,8 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
         break;
 
     case SNHUBAPI_EVT_SDATA_REQ:  // IPSO parse from sensor data request response
-        LOG_INFO("+EVT:PID[%02x],IPSO[%02x]", pid, msg[0]);
+        if (msg[0] != RAK_IPSO_CO2)
+            LOG_INFO("+EVT:PID[%02x],IPSO[%02x]", pid, msg[0]);
         if (msg[0] == RAK_IPSO_DIGITAL_INPUT || msg[0] == RAK_IPSO_DIGITAL_OUTPUT) {
             logIpoRawHex("SDATA", msg[0], msg, len);
         } else if (msg[0] == 0x82 || msg[0] == RAK_IPSO_ANALOG_INPUT) {
@@ -1315,20 +1345,9 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("air pressure sensor: %.1f hPa", pressure);
             break;
         }
-        case RAK_IPSO_CO2: {  // CO2 (0x7D), scale sensor-defined
-            if (len < 3)
-                break;
-            uint16_t raw = (msg[2] << 8) + msg[1];
-            float co2 = raw;
-            if (co2 < 0.0f || co2 > 5000.0f) {
-                LOG_INFO("Ignore CO2 sensor value out of range: %.2f ppm", co2);
-                break;
-            }
-            // Do not overwrite with 0 (sensor may send 0 for "no data" or second channel)
-            if (co2 > 0.0f) {
-                setScalar(env.co2, co2, millis());
-                LOG_INFO("CO2 sensor: %.2f ppm", co2);
-            }
+        case RAK_IPSO_CO2: { // CO2 (0x7D)
+            if (parseCo2Ipso(msg, len, "SDATA"))
+                rakSensorHub.setLastRead(millis());
             break;
         }
         case RAK_IPSO_HP_EC: { // High-precision EC (0x7F), 4 bytes little-endian
@@ -1645,7 +1664,8 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
 
         break;
     case SNHUBAPI_EVT_REPORT:  // Unsolicited report IPSO parse (same logic as SDATA_REQ)
-        LOG_INFO("+EVT:PID[%02x],IPSO[%02x]", pid, msg[0]);
+        if (msg[0] != RAK_IPSO_CO2)
+            LOG_INFO("+EVT:PID[%02x],IPSO[%02x]", pid, msg[0]);
         if (msg[0] == RAK_IPSO_DIGITAL_INPUT || msg[0] == RAK_IPSO_DIGITAL_OUTPUT) {
             logIpoRawHex("REPORT", msg[0], msg, len);
         } else if (msg[0] == 0x82 || msg[0] == RAK_IPSO_ANALOG_INPUT) {
@@ -1741,19 +1761,9 @@ static void onewire_evt(const uint8_t pid, const uint8_t sid, const SNHUBAPI_EVT
             LOG_INFO("air pressure sensor: %.1f hPa", pressure);
             break;
         }
-        case RAK_IPSO_CO2: {  // CO2 (0x7D)
-            if (len < 3)
-                break;
-            uint16_t raw = (msg[2] << 8) + msg[1];
-            float co2 = raw;
-            if (co2 < 0.0f || co2 > 5000.0f) {
-                LOG_INFO("Ignore CO2 sensor value out of range: %.2f ppm", co2);
-                break;
-            }
-            if (co2 > 0.0f) {
-                setScalar(env.co2, co2, millis());
-                LOG_INFO("CO2 sensor: %.2f ppm", co2);
-            }
+        case RAK_IPSO_CO2: { // CO2 (0x7D)
+            if (parseCo2Ipso(msg, len, "REPORT"))
+                rakSensorHub.setLastRead(millis());
             break;
         }
         case RAK_IPSO_HP_EC: { // High-precision EC (0x7F), 4 bytes little-endian
@@ -2680,28 +2690,33 @@ static void rakhubUsbHandleLine(char *line)
     LOG_INFO("RAKHUB: unknown \"%s\". Try RAKHUB HELP.", cmd);
 }
 
+void rakhubUsbFeedByte(uint8_t c)
+{
+    if (c == '\r')
+        return;
+    if (c == '\n') {
+        if (rakhub_usb_line_len == 0)
+            return;
+        rakhub_usb_line[rakhub_usb_line_len] = '\0';
+        rakhubUsbHandleLine(rakhub_usb_line);
+        rakhub_usb_line_len = 0;
+        return;
+    }
+    if (rakhub_usb_line_len + 1 >= sizeof(rakhub_usb_line)) {
+        rakhub_usb_line_len = 0;
+        LOG_INFO("RAKHUB: line overflow, discarded");
+        return;
+    }
+    rakhub_usb_line[rakhub_usb_line_len++] = (char)c;
+}
+
 static void rakhubUsbPollSerial()
 {
     while (Serial.available() > 0) {
         int c = Serial.read();
         if (c < 0)
             break;
-        if (c == '\r')
-            continue;
-        if (c == '\n') {
-            if (rakhub_usb_line_len == 0)
-                continue;
-            rakhub_usb_line[rakhub_usb_line_len] = '\0';
-            rakhubUsbHandleLine(reinterpret_cast<char *>(rakhub_usb_line));
-            rakhub_usb_line_len = 0;
-            continue;
-        }
-        if (rakhub_usb_line_len + 1 >= sizeof(rakhub_usb_line)) {
-            rakhub_usb_line_len = 0;
-            LOG_INFO("RAKHUB: line overflow, discarded");
-            continue;
-        }
-        rakhub_usb_line[rakhub_usb_line_len++] = (char)c;
+        rakhubUsbFeedByte((uint8_t)c);
     }
 }
 
@@ -2778,7 +2793,7 @@ static int32_t onewirePollHandle()
 
     if (now - status_delta >= 5000) {
         status_delta = now;
-        LOG_INFO("RAKSensorHub Status: last_tx: %lums ago, last_rx: %lums ago, provision=%u",
+        LOG_DEBUG("RAKSensorHub Status: last_tx: %lums ago, last_rx: %lums ago, provision=%u",
                  (unsigned long)(now - last_tx_time), (unsigned long)(now - last_rx_time),
                  (unsigned)provision_list.size());
     }
