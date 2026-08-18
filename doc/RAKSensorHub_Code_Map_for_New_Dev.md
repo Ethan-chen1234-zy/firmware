@@ -41,10 +41,16 @@ Handoff doc: `doc/README_RAKSensorHub_Downlink_POC.en.md`.
 Downlink entry points to search for (keywords):
 
 - `sendNextDownlinkPoc()` (clear phase / config phase)
+- `scheduleDownlinkPoc()` + **`RAK_SENSORHUB_DOWNLINK_AUTO`** (skip auto clear on join when `AUTO=0`)
 - `downlink_poc_*` (state + pacing, e.g. `downlink_poc_step/phase/pending/next_ms`)
 - `IO_ADDPOLLEX` / `IO_ENABLEPOLL` / `IO_CFG` / `IO_DECODE` (IOC TX points)
 - `IOC RSP` (response logs used to confirm which IOC steps succeeded/failed)
 - `RAKHUB` (USB CDC command entry: `RS485/AIC/BUILTIN/APPLY/CLEARAIC`, etc.)
+- **`rakhubUsbFeedByte()`** / **`parseCo2Ipso()`** (USB line assembly; IPSO 0x7D CO₂ ppm)
+
+#### 3.1b USB + protobuf coexistence
+
+- **`src/mesh/StreamAPI.cpp`**: when hunting Meshtastic protobuf `START1` (`0x94`), non-matching bytes are forwarded to **`rakhubUsbFeedByte()`** (declared in `RAKSensorHubProfile.h`). Without this, `RAKHUB APPLY` lines are dropped if any protobuf client touched the port first.
 
 #### 3.2 Python helper (minimal USB text sender)
 
@@ -52,7 +58,8 @@ Downlink entry points to search for (keywords):
   - `rs485` / `aic` / `builtin` / `json`: send `RAKHUB ...` lines
   - `clear`: send `RAKHUB BUILTIN 0` + `RAKHUB APPLY` (clear RS485/IOC defaults)
   - `clearaic`: send `RAKHUB CLEARAIC` (clear AIC decode defaults)
-  - `json`: WisToolBox-style JSON → RAKHUB lines (multi-task RS485, `slot=0..3`)
+  - `json --apply`: WisToolBox-style JSON → RAKHUB lines; **always emits `slot=i`** per task (clears stale USB template RAM)
+  - Verified GE profiles: `bin/battery_lite_core-1.2.27.json` (RAK9154), `bin/rk300_03_core-1.2.27.json` (RK300-03 CO₂)
 
 #### 3.3 Docs
 
@@ -84,7 +91,7 @@ This is not a production configuration channel. It is a lab / POC helper:
 - **USB CDC (firmware side)**: parses `RAKHUB ...` text, stores a USB override template, then `APPLY` triggers a downlink POC run (clear → wait for ProbeIO power-cycle/rejoin → config).
 - **Python (PC side)**: sends those text lines over the serial port and can convert JSON → RAKHUB lines.
 
-Note: do not share the same CDC port with a Meshtastic protobuf client while sending `RAKHUB ...` lines.
+Note: do not share the same CDC port with a Meshtastic protobuf client while sending `RAKHUB ...` lines. If a protobuf client already hunted `START1`, leftover ASCII is still forwarded via `rakhubUsbFeedByte()` (see §3.1b) — but exclusive port use remains the reliable lab rule.
 
 ---
 
@@ -144,13 +151,14 @@ Typical lab sequence:
 
 Latest commit on this branch (HEAD):
 
-- `e0ce1615d`：`docs(rak2560): uplink POC release process and v2.7.21 tag artifacts README`
+- `bcd835654`：GE JSON downlink — `DOWNLINK_AUTO=0`, `StreamAPI`→`rakhubUsbFeedByte`, `battery_lite` / `rk300_03` JSON, CO₂ parse + log throttling (see `doc/RAKSensorHub_CHANGELOG.md` §〇-B)
 
 Key commits related to the downlink POC:
 
 - `3e93e8fc8`: downlink IOC POC (`IO_ADDPOLLEX`, etc.)
 - `f12f0819a`：AIC `IO_DECODE` downlink
 - `d79f2d62a`: USB text POC + `bin/rakhub_usb_poc.py` (multi-task `slot=` approach)
+- `bcd835654`: GE JSON APPLY path + USB/protobuf coexistence + CO₂ uplink verified
 
 To list changes since the uplink baseline tag:
 

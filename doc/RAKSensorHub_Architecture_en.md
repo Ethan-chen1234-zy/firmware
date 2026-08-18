@@ -233,7 +233,7 @@ Key design goals:
 1. **Support a wide range of RAK sensors** via a single OneWire/Probe IO integration.
 2. **Map everything into standard Meshtastic telemetry structs** so existing app / tooling can consume the data.
 3. **Be robust to timing jitter and CPU load**, especially when the phone app is connected over BLE.
-4. **Avoid hard coupling to a single RS485/Modbus configuration** – leave configuration to Probe IO tools.
+4. **Avoid hard coupling to a single RS485/Modbus SKU** – ProbeIO EEPROM + USB GE JSON (`RAKHUB APPLY`) provision tasks; Hub flash does not persist the template.
 
 Main trade‑offs:
 
@@ -243,11 +243,7 @@ Main trade‑offs:
   - Overflow detection and resync.
   - Listen windows and TX throttling on capability/join.
   - Conservative freshness windows (5 minutes) for env cache.
-- Commands / downlink (e.g. RS485 register configuration, PARAMSET frames) are **not implemented**, to keep
-  the hub focused on reliable uplink telemetry in this snapshot. Future work may add:
-  - A command queue layered over `RakSNHub_Protocl_API`.
-  - Admin/Serial APIs for sending specific Probe IO commands.
-  - Further decoupling of RX, TX, and BLE activity.
+- **Downlink is a lab POC, not a product Admin API.** USB `RAKHUB …` + IOC (`IO_ADDPOLLEX` / `IO_CFG` / …) can provision ProbeIO GE tasks; persistence is ProbeIO EEPROM, not Hub flash. Production path (NVS + Admin protobuf) is still future work. See `doc/README_RAKSensorHub_Downlink_POC.en.md`.
 
 ---
 
@@ -269,4 +265,16 @@ It:
 
 This architecture makes it possible to plug a wide range of RAK SensorHub ecosystems into Meshtastic
 with minimal app changes, while keeping the firmware side confined to a single, well‑defined module.
+
+---
+
+### 8. Downlink / USB `RAKHUB` (POC)
+
+Lab provisioning lives in the same module, gated by `RAK_SENSORHUB_DOWNLINK_POC` / `RAK_SENSORHUB_USB_PROFILE`:
+
+- **IOC state machine** (`scheduleDownlinkPoc` / `sendNextDownlinkPoc`): clear → wait ProbeIO rejoin → `IO_CFG` + `IO_ADDPOLLEX` + `IO_ENABLEPOLL`.
+- **`RAK_SENSORHUB_DOWNLINK_AUTO=0`** (current `rak2560` default): join / Hub reboot does **not** auto-clear ProbeIO EEPROM; only a manual `RAKHUB APPLY` rewrites tasks.
+- **USB text**: `rakhubUsbFeedByte()` assembles `RAKHUB …` lines. `src/mesh/StreamAPI.cpp` forwards non-protobuf `START1` bytes into that parser so APPLY is not dropped while SerialConsole hunts `0x94`.
+- **JSON helper**: `bin/rakhub_usb_poc.py json --apply` always emits **`slot=0`** (then `slot=1…`) so Hub RAM is overwritten, not appended.
+- **CO₂**: `parseCo2Ipso()` (IPSO 0x7D, little-endian ppm) writes `env.co2`; `LOG_INFO` only when the value changes. Routine `+EVT:REQ/RSP` and Hub Status are `LOG_DEBUG`.
 

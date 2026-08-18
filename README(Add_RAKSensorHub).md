@@ -15,6 +15,8 @@
 | Roadmap / next phase | `doc/RAKSensorHub_Next_Phase_Design.md` (+ `.en.md`) |
 | Uplink IPSO ↔ sensors | `doc/RAKSensorHub_Uplink_Sensor_Support_List.en.md` |
 | Code map for new devs | `doc/RAKSensorHub_Code_Map_for_New_Dev.md` |
+| Task plan (P0/P1/P2) | `doc/RAKSensorHub_Task_Plan.md` (+ `.en.md`) |
+| Sprint 1–2 bench verification | `doc/RAKSensorHub_POC_Sprint1_Verification.md` |
 | **Commit-level changelog** | **`doc/RAKSensorHub_CHANGELOG.md`** ← append rows here after each meaningful merge |
 | Uplink POC release process | `doc/RAKSensorHub_Release_Uplink_POC.md` |
 | Uplink POC build verification (tag / commit / SHA256) | `releases/uplink-poc/v2.7.21-raksensorhub-poc-uplink/README-RELEASE.md` |
@@ -33,7 +35,8 @@
 | M2 | **Downlink IOC POC** on Hub (`IO_ADDPOLLEX` etc., `3e93e8fc8`). |
 | M3 | **AIC** `IO_DECODE` path (`f12f0819a`). |
 | M4 | Merge `develop`, docs / `platformio` hygiene (`e94e21094`, `9cf699d45`, `ecac05a5e`). |
-| M5 | **USB CDC `RAKHUB` + `bin/rakhub_usb_poc.py`** (`RAK_SENSORHUB_USB_PROFILE`), multi-task `slot=`, XMODEM hook stub; changelog row = `doc/RAKSensorHub_CHANGELOG.md` §一 首行（提交后补短 hash）。 |
+| M5 | **USB CDC `RAKHUB` + `bin/rakhub_usb_poc.py`** (`RAK_SENSORHUB_USB_PROFILE`), multi-task `slot=`, XMODEM hook stub (`d79f2d62a`). |
+| M6 | **GE JSON downlink + stable USB APPLY** (`bcd835654`): `DOWNLINK_AUTO=0`, `StreamAPI` → `rakhubUsbFeedByte`, `battery_lite` / `rk300_03` JSON, CO2 uplink verified. See `doc/RAKSensorHub_CHANGELOG.md` §〇-B. |
 
 For the full table, open **`doc/RAKSensorHub_CHANGELOG.md`**.
 
@@ -44,10 +47,12 @@ For the full table, open **`doc/RAKSensorHub_CHANGELOG.md`**.
 | Area | Path | Role |
 |------|------|------|
 | Hub driver | `src/modules/Telemetry/Sensor/RAKSensorHub.cpp`, `.h` | OneWire poll/RX, IPSO → `EnvCache`, downlink POC state machine, optional USB `RAKHUB` parser |
+| CDC / protobuf coexist | `src/mesh/StreamAPI.cpp` | Forwards non-protobuf bytes to `rakhubUsbFeedByte()` so `RAKHUB` lines are not dropped while the app is connected |
 | Telemetry export | `src/modules/Telemetry/EnvironmentTelemetry.cpp`, `AirQualityTelemetry.cpp` | Maps hub metrics into Meshtastic protobuf for mesh/app |
-| Board flags | `variants/nrf52840/rak2560/platformio.ini` | **`HAS_RAKHUB`**, **`RAK_SENSORHUB_DOWNLINK_POC`**, **`RAK_SENSORHUB_DOWNLINK_TEMPLATE`**, **`RAK_SENSORHUB_USB_PROFILE`**, `lib_extra_dirs` → `RAK-OneWireSerial` |
+| Board flags | `variants/nrf52840/rak2560/platformio.ini` | **`HAS_RAKHUB`**, **`RAK_SENSORHUB_DOWNLINK_POC`**, **`RAK_SENSORHUB_DOWNLINK_TEMPLATE`**, **`RAK_SENSORHUB_DOWNLINK_AUTO`**, **`RAK_SENSORHUB_USB_PROFILE`**, `lib_extra_dirs` → `RAK-OneWireSerial` |
 | OneWire library | **`RAK-OneWireSerial`** (see `lib_extra_dirs` in `platformio.ini`) | IOC helpers, framing, `RakSNHub_IOC_*` |
-| USB POC helper | `bin/rakhub_usb_poc.py` | Sends `RAKHUB …` lines over CDC (pyserial); not Meshtastic protobuf CLI |
+| USB POC helper | `bin/rakhub_usb_poc.py` | Sends `RAKHUB …` lines over CDC (pyserial); WisToolBox JSON → RAKHUB |
+| GE JSON templates | `bin/battery_lite_core-1.2.27.json`, `bin/rk300_03_core-1.2.27.json` | Verified RS485 profiles for RAK9154 (Modbus `0x6E`) and RK300-03 CO₂ (slave `01`) |
 | XMODEM hook (stub) | `src/xmodem.cpp`, `src/modules/Telemetry/Sensor/RAKSensorHubProfile.h` | Profile upload callback wiring (POC / future profile file) |
 
 ---
@@ -94,7 +99,9 @@ Edit **`variants/nrf52840/rak2560/platformio.ini`** under `[env:rak2560] build_f
 **Downlink / configuration (POC)**
 
 - IOC sequences aligned with Probe IO **core-1.2.27**.
-- **Not** WisToolBox inside the Meshtastic app; lab path is **USB `RAKHUB`** or compile-time template + `APPLY` flow.
+- Lab path: **USB `RAKHUB`** + `bin/rakhub_usb_poc.py` → `RAKHUB APPLY` (not WisToolBox inside the Meshtastic app).
+- **`RAK_SENSORHUB_DOWNLINK_AUTO=0`** (current `rak2560` default): Hub reboot does **not** auto-clear ProbeIO EEPROM; re-apply only when changing sensors.
+- **Bench verified (2026-08-17, GE mode)**: `battery_lite` → RAK9154 voltage/current/SOC/temp; `rk300_03` → CO₂ **~985 ppm** (`IPSO 0x7D` → `AirQualityMetrics`).
 
 ---
 
@@ -138,6 +145,8 @@ pio run -e rak2560 -t upload --upload-port COMx
 | Multi RS485 (`--task-spec` → `slot=0,1,…`) | `python bin/rakhub_usb_poc.py --port COMx --apply rs485 --baud 4800 --task-spec "task=1,hex=010300000001,ipso=112,name=Hum" --task-spec "task=2,hex=010300010001,ipso=103,name=PH"` |
 | AIC + APPLY | `python bin/rakhub_usb_poc.py --port COMx --apply aic --ch 1 --ipso 130 --min 0 --max 5` |
 | Built-in template + APPLY (e.g. clear AIC path) | `python bin/rakhub_usb_poc.py --port COMx --apply builtin 4` |
+| **RAK9154 (GE JSON)** + APPLY | `python bin/rakhub_usb_poc.py --port COMx --apply json --file bin/battery_lite_core-1.2.27.json --hub-ready-sec 0 --post-apply-lines 400` |
+| **RK300-03 CO₂ (GE JSON)** + APPLY | `python bin/rakhub_usb_poc.py --port COMx --apply json --file bin/rk300_03_core-1.2.27.json --hub-ready-sec 0 --post-apply-lines 400` |
 | APPLY for PID `0x01` | add `--pid 01` to any `--apply` command above |
 
 Full narrative: `doc/README_RAKSensorHub_Downlink_POC.en.md`.

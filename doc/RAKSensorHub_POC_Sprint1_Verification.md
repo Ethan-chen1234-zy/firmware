@@ -99,3 +99,40 @@ firmware/
 
 - **要解码并显示/缓存新增字段**的接收端固件，也必须基于**同一份 `telemetry.proto`** 生成对应的 `telemetry.pb.h`。
 - 官方旧固件对未知 field 会丢弃：能收包，但不会在 `EnvironmentMetrics` 结构体里体现新增字段。
+
+---
+
+## 6. Sprint 2 — GE JSON 下行台架（2026-08-17 ✅）
+
+**基线**：特性分支 `feature/add_RAKSensorHub`，commit `bcd835654`。ProbeIO **core-1.2.27**，**GE** 模式（不是 `dtype=RS` 内置驱动）。Hub：`DOWNLINK_POC=1` `TEMPLATE=0` **`DOWNLINK_AUTO=0`** `USB_PROFILE=1`。
+
+### 6.1 代码 / 工具
+
+| 项 | 说明 |
+|----|------|
+| `DOWNLINK_AUTO=0` | Hub 重启不自动 clear ProbeIO EEPROM |
+| `rakhubUsbFeedByte` + `StreamAPI.cpp` | protobuf `START1` 狩猎时转发 ASCII，`RAKHUB APPLY` 不被吃掉 |
+| `bin/rakhub_usb_poc.py` | JSON 每条任务都带 `slot=i`（从 0 起），覆盖 RAM 不追加 |
+| `bin/battery_lite_core-1.2.27.json` | RAK9154，从站 `0x6E`，IPSO 0xBA/0xB9/0xB8/0x67 |
+| `bin/rk300_03_core-1.2.27.json` | RK300-03 CO₂，从站 `01`，IPSO 0x7D |
+| `parseCo2Ipso()` | 小端 ppm；仅数值变化 `LOG_INFO` |
+
+### 6.2 命令（COM 口按本机改）
+
+```text
+python bin/rakhub_usb_poc.py --port COMx --apply json --file bin/battery_lite_core-1.2.27.json --hub-ready-sec 0 --post-apply-lines 400
+python bin/rakhub_usb_poc.py --port COMx --apply json --file bin/rk300_03_core-1.2.27.json --hub-ready-sec 0 --post-apply-lines 400
+```
+
+APPLY 后：看 `IOC RSP: func=IO_ADDPOLLEX` / `IO_ENABLEPOLL`；`queued all` 后再等一个 poll period（~60 s）。`+ERR:SEQUCE` 常见，不算失败。
+
+### 6.3 验收
+
+| 验收项 | 结论 |
+|--------|------|
+| RAK9154 电压 / 电流 / SOC / 温度 | ✅ 例：`Battery voltage: 12.88 V` / `10.78 V`，温度约 26 °C |
+| RK300-03 CO₂ → `AirQualityMetrics` | ✅ `7D D9 03` = **985 ppm**（小端） |
+| 从站写错 `02` | ❌ `7D 00 00` 空槽；改回 `01` 后恢复 |
+| Hub 重启不擦 ProbeIO 任务 | ✅ `DOWNLINK_AUTO=0` |
+
+细节与「有用 / 可省略」文件表：`doc/RAKSensorHub_CHANGELOG.md` §〇-B。

@@ -64,6 +64,38 @@ CMakeLists.txt
 .claude/scheduled_tasks.lock
 userPrefs.jsonc.mcp-session-bak
 
+# Local Cursor/agent skills (keep on disk, do not commit)
+.agents/
+
+# Local leftover POC dumps (keep on disk). Already-tracked doc/* stay tracked.
+/doc/*.pdf
+/doc/*.png
+/doc/*.jpg
+/doc/*.pptx
+/releases/v2.8.0-raksensorhub-poc-split/
+
+# Untracked leftover markdown under doc/; tracked .md files are unaffected.
+# To add a new doc later: git add -f doc/YourFile.md
+/doc/POC_TestPlan_v0.1.md
+/doc/RAK2560_OneWire_UART2_HotPlug_Failure_Analysis.md
+/doc/RAK2560_SensorHub_POC_Demo_Summary.md
+/doc/RAKSensorHub_Architecture_zh.md
+/doc/RAKSensorHub_Next_Phase_Design.en.md
+/doc/RAKSensorHub_Next_Phase_Design.md
+/doc/RAKSensorHub_POC_Demo.md
+/doc/RAKSensorHub_POC_Demo_Slides.md
+/doc/README_RAKSensorHub_Downlink_POC.zh.md
+/doc/SensorHub_Architecture_v0.1.md
+/doc/SensorHub_Interface_v0.1.md
+/doc/SensorHub_Meshtastic_Product_Design_cn.md
+/doc/SensorHub_PRD_v0.1.md
+/doc/*Skill*.md
+/doc/RAKSensorHub&Meshtastic Python CLI *.md
+/doc/RAKSensorHub上行版本支持的传感器列表.md
+/doc/SensorHub_Architecture架构_v0.1.md
+/doc/代码设计与测试Skill模板.md
+/doc/技术分析与方案设计Skill模板.md
+
 # Fake-NodeDB fixture pipeline (bin/regen-fake-nodedbs.sh)
 # JSONL seeds are committed (test/fixtures/nodedb/seed_v25_*.jsonl);
 # compiled .proto outputs are ephemeral build artifacts.

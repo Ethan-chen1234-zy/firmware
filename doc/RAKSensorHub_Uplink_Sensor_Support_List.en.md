@@ -41,6 +41,32 @@ Shipped in SensorHub firmware; use with ProbeIO directly.
 
 Registers and datatype are per sensor manual. Table below: typical agri/water mappings (examples).
 
+**GE vs ProbeIO built-in drivers (core-1.2.27):** Hub USB JSON (`IO_ADDPOLLEX`) always installs **GE** poll tasks. That is **not** the same as ProbeIO SKU drivers (`dtype=RS` / `do_RAK9154_*` in `app_start.c`). RK300-03 has **no** built-in driver — GE only.
+
+**Bench-verified GE profiles (2026-08-17)** — apply with `bin/rakhub_usb_poc.py json --apply`:
+
+| Sensor | JSON | Modbus slave | IPSO | Hub mapping | Notes |
+|--------|------|--------------|------|-------------|-------|
+| **RAK9154** battery | `bin/battery_lite_core-1.2.27.json` | `0x6E` | 0xBA V, 0xB9 A, 0xB8 SOC, 0x67 °C | `HubPower` + `EnvironmentMetrics` | Four GE tasks; not `dtype=RS` built-in |
+| **RK300-03** CO₂ | `bin/rk300_03_core-1.2.27.json` | `01` (`010300000001`) | 0x7D (125) | `env.co2` → `AirQualityMetrics` | Default slave **01**; `02` yields `7D 00 00` |
+
+#### 3.1.1 Bench-verified GE profiles (core-1.2.27, USB `RAKHUB APPLY`)
+
+These sensors are **not** built-in ProbeIO drivers on core-1.2.27; they use **Generic Engine (GE)** Modbus polling via `IO_ADDPOLLEX`. JSON templates live in `bin/`; apply with `bin/rakhub_usb_poc.py json --apply`.
+
+| Sensor | Mode | Slave | Modbus / notes | IPSO(s) | Hub → Meshtastic | JSON template |
+|--------|------|-------|----------------|---------|------------------|---------------|
+| **RAK9154** | GE | per template | Battery pack; multi-register poll | 0xB8 (SOC), 0xB9 (current), 0xBA (voltage), temp | `HubPower` → `EnvironmentMetrics.voltage/current`; SOC in power cache | `bin/battery_lite_core-1.2.27.json` |
+| **RK300-03** | GE | **01** (default) | CO₂; register map per RK300 manual | **0x7D** (CO₂ ppm) | `EnvCache.co2` → `AirQualityMetrics.co2` via `parseCo2Ipso()` | `bin/rk300_03_core-1.2.27.json` |
+
+**Field notes (2026-08-17 bench)**:
+
+- ProbeIO loads GE tasks from **EEPROM on boot** (`modbus_init()`). After `APPLY`, **power-cycle ProbeIO** if IPSO 0x7D stays `00 00` (empty slot).
+- Wrong Modbus slave address (e.g. `DEV_ADDR=02` when sensor is `01`) produces valid IPSO headers but zero payload.
+- Hub default `RAK_SENSORHUB_DOWNLINK_AUTO=0`: rebooting the Hub does **not** clear ProbeIO EEPROM; re-apply only when changing sensors.
+
+See `doc/README_RAKSensorHub_Downlink_POC.en.md` and `doc/RAKSensorHub_CHANGELOG.md` §〇-B.
+
 | Quantity | Typical register | Length | Scale | Unit | IPSO | Notes |
 |----------|------------------|--------|-------|------|------|-------|
 | Nitrogen | User-defined | 2 | 1 | mg/kg | 0x10 | |
@@ -118,12 +144,16 @@ Parsed in `onewire_evt()` SDATA/REPORT `switch` (same style as salinity/EC/pH). 
 | 0xC2 | 194 | Standard pH |
 | 0xC3 | 195 | Pyranometer |
 | 0xBC | 188 | Soil moisture |
+| 0x7D | 125 | CO₂ (ppm, little-endian uint16; `parseCo2Ipso`) |
+| 0xBA | 186 | DC voltage (0.01 V; RAK9154 GE) |
+| 0xB9 | 185 | DC current (0.01 A; RAK9154 GE) |
+| 0xB8 | 184 | Battery percent (RAK9154 GE → `HubPower.percent`) |
 
 ---
 
 ## 6. Summary
 
-RAK2560 SensorHub connects **multiple probes** over **OneWire**; each probe can host **1–2 WisBlock modules**, or **ProbeIO** can expose **RS485, SDI-12, 4–20 mA** for third-party sensors. Firmware embeds Modbus register maps and IPSO definitions for common third-party devices. **Current uplink build does not support user provisioning of new sensors** — that requires the **downlink/config** track.
+RAK2560 SensorHub connects **multiple probes** over **OneWire**; each probe can host **1–2 WisBlock modules**, or **ProbeIO** can expose **RS485, SDI-12, 4–20 mA** for third-party sensors. Firmware embeds Modbus register maps and IPSO definitions for common third-party devices. **User provisioning of new RS485 sensors** uses the **downlink/USB GE JSON** track (`RAKHUB APPLY` + `bin/rakhub_usb_poc.py`); see `doc/README_RAKSensorHub_Downlink_POC.en.md`.
 
 ---
 

@@ -113,3 +113,19 @@ gh release upload v2.7.21-raksensorhub-poc-uplink .\rak2560-uplink-poc-v2.7.21.z
 - **当前特性分支后续提交**：可能包含 `RAK_SENSORHUB_DOWNLINK_POC`、`RAK_SENSORHUB_USB_PROFILE` 等，**不得**用本 tag 的 Release 去指代那些二进制。
 
 更新 changelog / README 时，请写清 **tag 名 + commit + 构建 env**。
+
+---
+
+## 7. 与当前工作区 `rak2560` 默认宏的差异（2026-08 起）
+
+Uplink tag 的 `platformio.ini` **没有**打开下行/USB。当前特性分支 `variants/nrf52840/rak2560/platformio.ini` 默认是：
+
+| 宏 | 当前默认 | 含义 |
+|----|----------|------|
+| `HAS_RAKHUB` | `1` | 与上行 tag 相同 |
+| `RAK_SENSORHUB_DOWNLINK_POC` | `1` | IOC 下行状态机 |
+| `RAK_SENSORHUB_DOWNLINK_TEMPLATE` | `0` | 内置模板占位（清表）；实际配置走 USB JSON |
+| `RAK_SENSORHUB_DOWNLINK_AUTO` | **`0`** | Hub 重启 / join **不**自动 clear ProbeIO EEPROM |
+| `RAK_SENSORHUB_USB_PROFILE` | `1` | USB `RAKHUB` 文本 |
+
+因此：**不要用 `v2.7.21-raksensorhub-poc-uplink` 的 UF2 去验收 GE JSON / CO₂**；那份二进制没有 USB APPLY 路径。GE 台架固件对应 commit **`bcd835654`**（见 `doc/RAKSensorHub_CHANGELOG.md` §〇-B）。

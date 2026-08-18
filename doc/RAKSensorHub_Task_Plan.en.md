@@ -6,7 +6,7 @@
 > **ProbeIO reference**: `core-1.2.27` (aligned with shipped ProbeIO).  
 > **Chinese version**: [`RAKSensorHub_Task_Plan.md`](RAKSensorHub_Task_Plan.md)
 
-**Document version**: 0.9 · **Last reviewed**: 2026-05-22
+**Document version**: 1.0 · **Last reviewed**: 2026-08-18
 
 ---
 
@@ -24,9 +24,9 @@
 
 **Scope note**: This is a **RAK2560 + ProbeIO POC** roadmap, not a full upstream Meshtastic commitment. Merging `telemetry.proto` needs separate coordination.
 
-### 0.2 Current status (2026-05-22, monolith @ v2.7.25)
+### 0.2 Current status (2026-08-18, monolith + GE JSON downlink)
 
-**One-liner**: Sprint 1 **P0 done in tree** — `telemetry.proto` fields 24–26, `getMetrics()` exports EC/pH/salinity, D2-5 IOC RSP timeout tuned, `rakhub_usb_poc.py` hub-ready wait. **Hardware re-verify** on bench still required.
+**One-liner**: Sprint 1 P0 still in tree. **Sprint 2 GE JSON** bench-verified 2026-08-17: RAK9154 (`battery_lite`) + RK300-03 CO₂ (`rk300_03`); `DOWNLINK_AUTO=0`; USB APPLY via `rakhubUsbFeedByte`. IOC `SEQUCE` during APPLY is still expected — confirm `IOC RSP`.
 
 | Capability | Status | Evidence |
 |------------|--------|----------|
@@ -65,7 +65,8 @@
 | `get.data` only shows `IPSO[82]` | DI downlink failed | Usually **stale AIC cache**; DI is **edge-driven**, not always in poll responses |
 | DS18B20 temperature on RAK4631 | DI should show temperature | **Hub `WB_IO1` (Dallas 1-Wire) ≠ ProbeIO DI (PB13)**; DI reports **0/1** only |
 | Sent `IO_DECODE(DI)` but no DI data | Frames ignored | ProbeIO needs **GE mode** + **REBOOT** so `rak_di_init()` applies GPIO |
-| `+ERR:SEQUCE` | Broken ProbeIO | Hub still polls `get.data` during IOC; need **D2-5** |
+| `+ERR:SEQUCE` | Broken ProbeIO | Hub still polls `get.data` during IOC; need **D2-5**. During APPLY, confirm `IOC RSP` instead of treating SEQUCE as fatal |
+| IPSO[7d] payload `7D 00 00` | Hub CO₂ parser broken | Wrong Modbus slave (e.g. `02` vs sensor `01`) or GE rule not loaded until ProbeIO power-cycle |
 | EC in EnvCache but not in App | Parse bug | **D1-1** missing: `getMetrics()` not mapped to protobuf |
 
 ---
@@ -81,8 +82,8 @@
 | D2-1 | SDI-12 USB / built-in template | ✅ | P1 | `IOC_SDI12`, `BUILTIN 5` |
 | D2-2 | DI / DO USB CLI + JSON | ✅ DI · ⚠️ DO | P2 | `RAKHUB DI`; DO has `BUILTIN 8`, USB `do` subcommand TBD |
 | D2-3 | RS232 downlink | ✅ | P2 | `BUILTIN 7` |
-| D2-4 | Preset templates (NPK, water quality, …) | 🔄 | P2 | `BUILTIN 0–9` exist; need business JSON library |
-| D2-5 | IOC throttle, RSP gate, REBOOT after DI | 🔄 | **P0** | Pause poll + IOC_RSP clears waiter; 5 s timeout; script `--hub-ready-sec` |
+| D2-4 | Preset templates (NPK, water quality, …) | 🔄 | P2 | `BUILTIN 0–9` exist; **GE JSON**: `battery_lite` (RAK9154), `rk300_03` (CO₂) verified |
+| D2-5 | IOC throttle, RSP gate, REBOOT after DI | 🔄 | **P0** | Pause poll + IOC_RSP; 5 s timeout; APPLY still logs `SEQUCE` — treat RSP as pass |
 | D2-6 | USB template NVS persistence | ❌ | P3 | Survive power cycle |
 | D2-7 | `SensorHubConfig` Admin protobuf | ❌ | P2 | Depends on D1-4, D2-6 |
 
@@ -121,7 +122,7 @@
 | **D2-1** | SDI-12 downlink | `IO_CFG` + `IO_ADDPOLLEX` for SDI-12 sensors | ✅ | `BUILTIN 5` or JSON; ProbeIO polls on schedule |
 | **D2-2** | DI / DO | `IO_DECODE` for digital I/O; USB `RAKHUB DI` + `DI_01.json` | ✅ DI / ⚠️ DO | DI: `IO_PSM`+`IO_DECODE` in log; DO: `BUILTIN 8`, no `rakhub do` yet |
 | **D2-3** | RS232 downlink | Serial passthrough poll template | ✅ | `BUILTIN 7` |
-| **D2-4** | Template library | Water / NPK WisToolBox JSON → `BUILTIN` or docs | 🔄 | Reproducible JSON + command per sensor class |
+| **D2-4** | Template library | Water / NPK WisToolBox JSON → `BUILTIN` or docs | 🔄 | Reproducible JSON: `battery_lite_core-1.2.27.json`, `rk300_03_core-1.2.27.json` |
 | **D2-5** | IOC hardening | Pause `get.data` during IOC; wait for RSP; **REBOOT** after DI | 🔄 | Done: pause poll + post-decode reboot; TBD: stepwise IOC |
 | **D2-6** | NVS persistence | Store USB template in Flash across Hub reboot | ❌ | `RAKHUB STATUS` still shows template after power cycle |
 | **D2-7** | Admin remote config | Protobuf SensorHub config (replace USB-only POC) | ❌ | App/CLI can APPLY equivalent config |
@@ -132,8 +133,9 @@
 
 | Item | Status | Notes |
 |------|--------|-------|
-| ProbeIO `dtype=GE` prerequisite | ⚠️ Documented | RC mode has no `rak_di_init` stack |
-| `rakhub_usb_poc.py` builtin range 0–9 | ✅ | — |
+| ProbeIO `dtype=GE` prerequisite | ⚠️ Documented | RC mode has no `rak_di_init` stack; 9154/RK300-03 POC uses **GE** poll tables, not `dtype=RS` built-in |
+| `RAK_SENSORHUB_DOWNLINK_AUTO=0` | ✅ | Hub reboot does not auto-clear ProbeIO EEPROM |
+| `StreamAPI` → `rakhubUsbFeedByte` | ✅ | Non-START1 bytes forwarded so `RAKHUB` survives protobuf hunt |
 | Meshtastic App vs `RAKHUB` on USB CDC | ⚠️ Ops | Disconnect App protobuf during downlink POC |
 
 ---
@@ -276,6 +278,7 @@ Sprint 3: D2-6, D2-7, D1-8
 
 | Version | Date | Notes |
 |---------|------|-------|
+| 1.0 | 2026-08-18 | GE JSON downlink + RAK9154 / RK300-03 bench; `DOWNLINK_AUTO=0`; `rakhubUsbFeedByte`; see CHANGELOG §〇-B and Sprint 2 in `RAKSensorHub_POC_Sprint1_Verification.md` |
 | 0.9 | 2026-05-22 | **P0 Sprint 1** on monolith v2.7.25: D1-4/5/1, D2-5 timeout, `rakhub_usb_poc.py --hub-ready-sec`; see `RAKSensorHub_POC_Sprint1_Verification.md` |
 | 0.8 | 2026-05-19 | v2.8.0 split tag local archive; branch reset to v2.7.25 monolith |
 | 0.7 | 2026-05-19 | Multi-file split phase 1–3; tags v2.7.25 / v2.8.0 |

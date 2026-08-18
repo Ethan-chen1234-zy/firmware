@@ -3,7 +3,7 @@
 **入口文档**：开发者请先阅读仓库根目录 **`README(Add_RAKSensorHub).md`**（主文件索引、构建宏、各能力用法）；本文件仅保留 **Git 提交级** 变更表。
 
 **分支**：`feature/add_RAKSensorHub`  
-**生成方式**：根据 `git log` 整理；§〇-B 为 2026-08-17 工作区未提交记录（RAK9154 GE + RK300-03 GE）。
+**生成方式**：根据 `git log` 整理；§〇-B 为 2026-08-17 **GE JSON 下行**（RAK9154 + RK300-03），已提交 `bcd835654`。
 
 ---
 
@@ -15,7 +15,7 @@
 
 ---
 
-## 〇-B、工作区未提交（2026-08-17，GE 通用 RS485）
+## 〇-B、GE JSON 下行（2026-08-17，commit `bcd835654`）
 
 共用基础设施（USB `RAKHUB`、`DOWNLINK_AUTO=0`、`rakhubUsbFeedByte`）见下表。两条传感器都是 ProbeIO **GE** 轮询表，不是 core 内置驱动。
 
@@ -72,6 +72,7 @@
 
 | 提交 | 日期 | 说明 |
 |------|------|------|
+| `bcd835654` | 2026-08-17 | GE JSON 下行：`DOWNLINK_AUTO=0`、`StreamAPI`→`rakhubUsbFeedByte`、`battery_lite` / `rk300_03` JSON、CO₂ 解析与日志降噪。详见 §〇-B。 |
 | `d79f2d62a` | 2026-05-13 | USB CDC `RAKHUB …` 运行时配置 POC（`RAK_SENSORHUB_USB_PROFILE`）；RS485 多任务 `slot=`；`bin/rakhub_usb_poc.py`；`RAKSensorHubProfile.h` / `xmodem.cpp` 钩子；根目录 `README(Add_RAKSensorHub).md` 入口与下行 POC / 架构 / 上行列表等文档同步。 |
 | `ecac05a5e` | 2026-05-12 | 补充文档（Add docs …） |
 | `9cf699d45` | 2026-05-12 | `platformio.ini`：库路径与版本说明澄清 |
@@ -131,6 +132,7 @@ git log --format="%h %ad %s" --date=short -30
 
 | 日期 | 说明 |
 |------|------|
-| 2026-08-17 | 未提交：RAK9154 GE + RK300-03 GE 验收；`DOWNLINK_AUTO`；USB `rakhubUsbFeedByte`。见 §〇-B。 |
+| 2026-08-18 | P0–P2 文档同步：架构 / 传感器列表 / 任务计划 / Sprint 2 验证 / 上行发布差异。§〇-B 对应 commit `bcd835654`。 |
+| 2026-08-17 | RAK9154 GE + RK300-03 GE 验收；`DOWNLINK_AUTO`；USB `rakhubUsbFeedByte`。见 §〇-B。 |
 | 2026-05-13 | 增加 USB POC 提交占位行、§ 三 条目 7。 |
 | 2026-05-12 | 初稿；入口 README 指向本文件。 |
